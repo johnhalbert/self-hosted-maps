@@ -25,26 +25,31 @@
   <div id="map"></div>
   <script src="/vendor/maplibre-gl.js"></script>
   <script>
+    const style = {
+      version: 8,
+      sources: {
+        osm: {
+          type: 'vector',
+          url: '/tiles/data/openmaptiles.json'
+        }
+      },
+      layers: [
+        { id: 'background', type: 'background', paint: { 'background-color': '#eef4ea' } },
+        { id: 'landcover', type: 'fill', source: 'osm', 'source-layer': 'landcover', paint: { 'fill-color': '#d8e8c8' } },
+        { id: 'water', type: 'fill', source: 'osm', 'source-layer': 'water', paint: { 'fill-color': '#9cc7ff' } },
+        { id: 'waterway', type: 'line', source: 'osm', 'source-layer': 'waterway', paint: { 'line-color': '#76a7ff', 'line-width': 1.2 } },
+        { id: 'building', type: 'fill', source: 'osm', 'source-layer': 'building', paint: { 'fill-color': '#d7c7b5', 'fill-outline-color': '#b79f8b' } },
+        { id: 'transportation', type: 'line', source: 'osm', 'source-layer': 'transportation', paint: { 'line-color': '#666', 'line-width': 1.5 } }
+      ]
+    };
+
     const map = new maplibregl.Map({
       container: 'map',
-      style: {
-        version: 8,
-        sources: {
-          osm: {
-            type: 'vector',
-            url: 'http://' + window.location.hostname + ':8080/data/openmaptiles.json'
-          }
-        },
-        layers: [
-          { id: 'landcover', type: 'fill', source: 'osm', 'source-layer': 'landcover', paint: { 'fill-color': '#d8e8c8' } },
-          { id: 'waterway', type: 'line', source: 'osm', 'source-layer': 'waterway', paint: { 'line-color': '#76a7ff', 'line-width': 1.2 } },
-          { id: 'building', type: 'fill', source: 'osm', 'source-layer': 'building', paint: { 'fill-color': '#d7c7b5', 'fill-outline-color': '#b79f8b' } },
-          { id: 'transportation', type: 'line', source: 'osm', 'source-layer': 'transportation', paint: { 'line-color': '#666', 'line-width': 1.5 } }
-        ]
-      },
+      style,
       center: [-91.56, 31.63],
       zoom: 10
     });
+
     map.addControl(new maplibregl.NavigationControl());
   </script>
 </body>
