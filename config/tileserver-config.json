@@ -1,0 +1,12 @@
+{
+  "options": {
+    "paths": {
+      "root": "/var/lib/self-hosted-maps/current"
+    }
+  },
+  "data": {
+    "openmaptiles": {
+      "mbtiles": "openmaptiles.mbtiles"
+    }
+  }
+}
