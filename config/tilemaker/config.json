@@ -1,0 +1,18 @@
+{
+  "settings": {
+    "minzoom": 0,
+    "maxzoom": 14,
+    "basezoom": 14,
+    "include_ids": false,
+    "compress": true
+  },
+  "layers": {
+    "water": { "source": "water" },
+    "waterway": { "source": "waterway" },
+    "landcover": { "source": "landuse" },
+    "building": { "source": "building" },
+    "transportation": { "source": "highway" },
+    "place": { "source": "place" },
+    "poi": { "source": "poi" }
+  }
+}
