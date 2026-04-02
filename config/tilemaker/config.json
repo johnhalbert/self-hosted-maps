@@ -4,7 +4,7 @@
     "maxzoom": 14,
     "basezoom": 14,
     "include_ids": false,
-    "compress": true
+    "compress": "gzip"
   },
   "layers": {
     "water": { "source": "water" },

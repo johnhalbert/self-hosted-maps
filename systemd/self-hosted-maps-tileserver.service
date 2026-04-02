@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=__CONFIG_ROOT__/self-hosted-maps.conf
 WorkingDirectory=__DATA_ROOT__/current
-ExecStart=/usr/bin/env tileserver-gl-light --config __CONFIG_ROOT__/tileserver-config.json
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/env tileserver-gl --config __CONFIG_ROOT__/tileserver-config.json
 Restart=always
 RestartSec=5
 User=root

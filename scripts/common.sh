@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
 }
@@ -30,15 +32,15 @@ write_env_file() {
   local cfg_dir="$1"
   mkdir -p "$cfg_dir"
   cat > "$cfg_dir/self-hosted-maps.conf" <<CFG
-SHM_INSTALL_ROOT=${SHM_INSTALL_ROOT}
-SHM_DATA_ROOT=${SHM_DATA_ROOT}
-SHM_CONFIG_ROOT=${SHM_CONFIG_ROOT}
-SHM_LOG_ROOT=${SHM_LOG_ROOT}
-SHM_REGION_MODE=${SHM_REGION_MODE}
-SHM_PBF_URL=${SHM_PBF_URL}
-SHM_UPDATE_SCHEDULE=${SHM_UPDATE_SCHEDULE}
-SHM_INSTALL_USER=${SHM_INSTALL_USER}
-SHM_TIMEZONE=${SHM_TIMEZONE}
+SHM_INSTALL_ROOT="${SHM_INSTALL_ROOT}"
+SHM_DATA_ROOT="${SHM_DATA_ROOT}"
+SHM_CONFIG_ROOT="${SHM_CONFIG_ROOT}"
+SHM_LOG_ROOT="${SHM_LOG_ROOT}"
+SHM_REGION_MODE="${SHM_REGION_MODE}"
+SHM_PBF_URL="${SHM_PBF_URL}"
+SHM_UPDATE_SCHEDULE="${SHM_UPDATE_SCHEDULE}"
+SHM_INSTALL_USER="${SHM_INSTALL_USER}"
+SHM_TIMEZONE="${SHM_TIMEZONE}"
 CFG
 }
 

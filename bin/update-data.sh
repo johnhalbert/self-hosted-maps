@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 source /etc/self-hosted-maps/self-hosted-maps.conf
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -15,7 +16,7 @@ exec >> "$LOG_FILE" 2>&1
 echo "[$(date '+%F %T')] starting update"
 curl -L --fail --retry 5 -o "$INCOMING_DIR/source.osm.pbf" "$SHM_PBF_URL"
 
-tilemaker \
+/usr/local/bin/tilemaker \
   --input "$INCOMING_DIR/source.osm.pbf" \
   --output "$BUILD_DIR/openmaptiles.mbtiles" \
   --config "${SHM_INSTALL_ROOT}/config/tilemaker/config.json" \

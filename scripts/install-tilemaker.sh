@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 ensure_root
-if command -v tilemaker >/dev/null 2>&1; then
+if [[ -x /usr/local/bin/tilemaker ]] || command -v tilemaker >/dev/null 2>&1; then
   log "tilemaker already installed"
   exit 0
 fi
@@ -15,5 +15,15 @@ cd "$WORKDIR"
 mkdir -p build
 cd build
 cmake ..
-make -j"$(nproc)"
+make -j1
 make install
+
+hash -r
+if [[ -x /usr/local/bin/tilemaker ]]; then
+  log "tilemaker installed at /usr/local/bin/tilemaker"
+elif command -v tilemaker >/dev/null 2>&1; then
+  log "tilemaker installed at $(command -v tilemaker)"
+else
+  echo "tilemaker install completed but binary not found on PATH" >&2
+  exit 1
+fi

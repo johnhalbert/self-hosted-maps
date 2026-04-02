@@ -8,5 +8,9 @@ if ! command -v node >/dev/null 2>&1; then
   apt-get install -y nodejs npm python3-setuptools
 fi
 
-log "Installing tileserver-gl-light globally"
-npm install -g tileserver-gl-light
+if command -v tileserver-gl >/dev/null 2>&1; then
+  log "tileserver-gl already installed"
+else
+  log "Installing tileserver-gl globally"
+  npm install -g tileserver-gl-light
+fi
