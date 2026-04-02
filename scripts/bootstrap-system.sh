@@ -33,6 +33,7 @@ apt-get install -y \
   python3 \
   python3-venv \
   python3-pip \
+  python3-setuptools \
   nginx
 systemctl enable cron
 systemctl restart cron
