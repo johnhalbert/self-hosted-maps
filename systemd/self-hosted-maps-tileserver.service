@@ -1,0 +1,16 @@
+[Unit]
+Description=Self Hosted Maps TileServer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=__CONFIG_ROOT__/self-hosted-maps.conf
+WorkingDirectory=__DATA_ROOT__/current
+ExecStart=/usr/bin/env tileserver-gl-light --config __CONFIG_ROOT__/tileserver-config.json
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
