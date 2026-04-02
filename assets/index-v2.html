@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Self Hosted Maps</title>
+  <link href="/vendor/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    html, body, #map { margin:0; padding:0; width:100%; height:100%; }
+    .banner {
+      position: absolute;
+      z-index: 10;
+      top: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.75);
+      color: #fff;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-family: sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div class="banner">Self Hosted Maps</div>
+  <div id="map"></div>
+  <script src="/vendor/maplibre-gl.js"></script>
+  <script>
+    const style = {
+      version: 8,
+      sources: {
+        osm: {
+          type: 'vector',
+          url: '/tiles/data/openmaptiles.json'
+        }
+      },
+      layers: [
+        { id: 'background', type: 'background', paint: { 'background-color': '#eef4ea' } },
+        { id: 'landcover', type: 'fill', source: 'osm', 'source-layer': 'landcover', paint: { 'fill-color': '#d8e8c8' } },
+        { id: 'water', type: 'fill', source: 'osm', 'source-layer': 'water', paint: { 'fill-color': '#9cc7ff' } },
+        { id: 'waterway', type: 'line', source: 'osm', 'source-layer': 'waterway', paint: { 'line-color': '#76a7ff', 'line-width': 1.2 } },
+        { id: 'building', type: 'fill', source: 'osm', 'source-layer': 'building', paint: { 'fill-color': '#d7c7b5', 'fill-outline-color': '#b79f8b' } },
+        { id: 'transportation', type: 'line', source: 'osm', 'source-layer': 'transportation', paint: { 'line-color': '#666', 'line-width': 1.5 } }
+      ]
+    };
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style,
+      center: [-91.56, 31.63],
+      zoom: 10
+    });
+
+    map.addControl(new maplibregl.NavigationControl());
+  </script>
+</body>
+</html>
