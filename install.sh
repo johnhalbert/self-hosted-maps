@@ -82,6 +82,7 @@ bash "$REPO_ROOT/scripts/install-runtime.sh"
 bash "$REPO_ROOT/scripts/configure-system.sh"
 bash "$REPO_ROOT/scripts/bootstrap-selection.sh"
 bash "$REPO_ROOT/scripts/register-cron.sh"
+bash "$REPO_ROOT/scripts/post-install-discoverability.sh"
 
 viewer_ip="$(hostname -I | awk '{print $1}')"
-success_box "Installation complete.\n\nViewer: http://${viewer_ip}/\nTiles JSON: http://${viewer_ip}/data/openmaptiles.json\nManager: ${install_root}/bin/map-manager.sh\nConfig: ${config_root}/self-hosted-maps.conf"
+success_box "Installation complete.\n\nViewer: http://${viewer_ip}/\nTiles JSON: http://${viewer_ip}/data/openmaptiles.json\nManager command: self-hosted-maps-manager\nManager path: ${install_root}/bin/map-manager.sh\nUsage guide: ${config_root}/manager-usage.txt\nConfig: ${config_root}/self-hosted-maps.conf"
