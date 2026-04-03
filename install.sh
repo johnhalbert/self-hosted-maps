@@ -53,4 +53,4 @@ bash "$REPO_ROOT/scripts/initial-build.sh"
 bash "$REPO_ROOT/scripts/register-cron.sh"
 
 viewer_ip="$(hostname -I | awk '{print $1}')"
-success_box "Installation complete.\n\nViewer: http://${viewer_ip}/\nTiles JSON: http://${viewer_ip}/tiles/data/openmaptiles.json\nConfig: ${config_root}/self-hosted-maps.conf"
+success_box "Installation complete.\n\nViewer: http://${viewer_ip}/\nTiles JSON: http://${viewer_ip}/data/openmaptiles.json\nConfig: ${config_root}/self-hosted-maps.conf"
