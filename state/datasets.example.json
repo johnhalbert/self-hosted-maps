@@ -1,0 +1,14 @@
+{
+  "catalog": {
+    "provider": "geofabrik",
+    "fetched_at": null,
+    "cache_path": null
+  },
+  "installed": {},
+  "selected": [],
+  "current": {
+    "selected_hash": null,
+    "artifact_path": null,
+    "rebuilt_at": null
+  }
+}
