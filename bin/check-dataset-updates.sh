@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if $REFRESH_CATALOG || [[ ! -f "$SHM_GEOFABRIK_CATALOG" ]]; then
+if $REFRESH_CATALOG || [[ ! -f "$SHM_NORMALIZED_CATALOG" ]]; then
   "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
 fi
 
@@ -76,8 +76,8 @@ build_record() {
   fi
 
   catalog_url=""
-  if [[ "$provider" == "geofabrik" && -f "$SHM_GEOFABRIK_CATALOG" ]]; then
-    catalog_url="$(jq -r --arg id "$id" '.features[] | select(.properties.id == $id) | .properties.urls.pbf // empty' "$SHM_GEOFABRIK_CATALOG" | head -1)"
+  if [[ -f "$SHM_NORMALIZED_CATALOG" ]]; then
+    catalog_url="$(jq -r --arg id "$id" '.[] | select(.id == $id) | .download_url // empty' "$SHM_NORMALIZED_CATALOG" | head -1)"
   fi
 
   if [[ -n "$catalog_url" ]]; then

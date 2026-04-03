@@ -52,19 +52,22 @@ if [[ -n "$pbf_path" && -f "$pbf_path" ]]; then
   old_size="$(stat -c %s "$pbf_path")"
 fi
 
-if $REFRESH_CATALOG || [[ ! -f "$SHM_GEOFABRIK_CATALOG" ]]; then
+if $REFRESH_CATALOG || [[ ! -f "$SHM_NORMALIZED_CATALOG" ]]; then
   "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
 fi
 
 new_url="$old_url"
 new_bounds="$old_bounds"
 new_parent="$(jq -r --arg id "$DATASET_ID" '.installed[$id].parent // ""' "$SHM_STATE_FILE")"
+new_provider="$provider"
+new_name="$name"
 
-if [[ "$provider" == "geofabrik" ]]; then
-  dataset_json="$($SHM_BIN_DIR/find-dataset.sh "$DATASET_ID")"
-  new_url="$(jq -r '.download_url' <<<"$dataset_json")"
+if dataset_json="$($SHM_BIN_DIR/find-dataset.sh "$DATASET_ID" 2>/dev/null)"; then
+  new_url="$(jq -r '.download_url // empty' <<<"$dataset_json")"
   new_bounds="$(jq -c '.bounds // []' <<<"$dataset_json")"
   new_parent="$(jq -r '.parent // ""' <<<"$dataset_json")"
+  new_provider="$(jq -r '.provider // "unknown"' <<<"$dataset_json")"
+  new_name="$(jq -r '.name // empty' <<<"$dataset_json")"
 fi
 
 mkdir -p "$dataset_dir"
@@ -81,8 +84,8 @@ updated_at="$(date -u +%FT%TZ)"
 existing_history="$(jq -c --arg id "$DATASET_ID" '.installed[$id].update_history // []' "$SHM_STATE_FILE")"
 META_JSON="$(jq -n \
   --arg id "$DATASET_ID" \
-  --arg name "$name" \
-  --arg provider "$provider" \
+  --arg name "$new_name" \
+  --arg provider "$new_provider" \
   --arg parent "$new_parent" \
   --arg url "$new_url" \
   --arg pbf "$pbf_path" \
@@ -126,4 +129,4 @@ if $REBUILD_AFTER && jq -e --arg id "$DATASET_ID" '(.selected // []) | index($id
   "$SHM_BIN_DIR/rebuild-selected.sh"
 fi
 
-log "Updated dataset $DATASET_ID ($name)"
+log "Updated dataset $DATASET_ID ($new_name)"
