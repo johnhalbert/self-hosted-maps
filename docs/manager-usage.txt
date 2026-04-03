@@ -22,7 +22,18 @@ Current served tileset:
 Viewer:
   http://<server-ip>/
 
+Manager capabilities:
+- browse the live catalog
+- install additional datasets over time
+- filter installed datasets by id, name, provider, or status
+- inspect installed dataset details
+- check for dataset updates
+- redownload a dataset via the update action
+- choose selected datasets for the next rebuild
+- rebuild the served map explicitly
+
 Notes:
 - The installer bootstraps the first dataset into the dataset state automatically.
-- Additional datasets can be installed later from the manager.
-- Rebuilding the served map from selected datasets is an explicit action.
+- The manager shows a one-time first-run hint when the system has only the bootstrap dataset installed.
+- Rebuilding the served map is explicit; installing or selecting datasets does not automatically rebuild.
+- `current.dataset_ids` in the state file tracks the dataset ids that were actually part of the last successful rebuild.

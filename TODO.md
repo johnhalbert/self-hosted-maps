@@ -1,39 +1,29 @@
 # TODO
 
-## Correctness
+## Initial backlog status
 
-- Fix installed dataset `current` status reporting in `bin/list-installed.sh` and `bin/show-installed-details.sh`.
-  - Right now `current` is inferred from `selected` plus the existence of a current artifact.
-  - That can over-report `current` when the selected set changes after the last rebuild.
-  - The status should instead be derived from whether the dataset participated in the last successful rebuild.
+All items from the initial map-manager and installer backlog have been implemented on the `backlog-all-in-one` branch.
 
-## Dataset state and rebuild tracking
+Completed areas:
 
-- Record the exact dataset IDs included in the last successful rebuild in `/etc/self-hosted-maps/datasets.json`.
-- Record per-dataset participation in the current served artifact so UI status is precise.
-- Consider storing a sorted selected-set snapshot alongside `current.selected_hash` for easier debugging.
+- precise `current` dataset status based on last successful rebuild membership
+- recording `current.dataset_ids` in `/etc/self-hosted-maps/datasets.json`
+- dataset update action in the manager
+- rebuild confirmation summary
+- installed-dataset filtering/search
+- first-run hint inside the manager
+- provider abstraction beyond Geofabrik
+- normalized provider-independent catalog entries
+- `docs/datasets.md`
+- documented launcher commands and state file structure
+- final install summary showing bootstrap dataset details
+- optional manager launch after install
+- install-time validation for manager runtime commands
 
-## Map manager UX
+## Future ideas
 
-- Add an installed-dataset update action, not just update checks.
-- Add a rebuild confirmation screen that summarizes the selected datasets before rebuild.
-- Add a post-install first-run hint inside the manager when only one bootstrap dataset exists.
-- Add filtering/search for installed datasets in addition to catalog search.
+These are not blockers for the current implementation, but may be useful later:
 
-## Catalog and providers
-
-- Add provider abstraction beyond Geofabrik.
-- Normalize provider metadata into a provider-independent schema.
-- Consider optional provider-specific dataset size metadata in the catalog cache.
-
-## Documentation
-
-- Add `docs/datasets.md` describing dataset lifecycle, additive installs, selection, rebuilds, and updates.
-- Document the stable launcher commands installed by `post-install-discoverability.sh`.
-- Document the structure of `/etc/self-hosted-maps/datasets.json` including `.bootstrap`, `.selected`, and `.current`.
-
-## Installer polish
-
-- Add a final install summary that shows the bootstrap dataset by name and id.
-- Optionally offer to launch `self-hosted-maps-manager` immediately after install on interactive terminals.
-- Consider validating required commands used by the enhanced manager (`column`, `numfmt`, `stat`, `du`) during install.
+- provider-specific dataset size metadata in the normalized catalog cache when reliable size information is available
+- richer provider metadata such as display labels or region hierarchy depth
+- catalog paging or lazy loading if additional providers make the merged catalog very large
