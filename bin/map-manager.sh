@@ -61,6 +61,23 @@ choose_installed_dataset() {
   printf '%s\n' "$choice"
 }
 
+show_first_run_hint_if_needed() {
+  local installed_count bootstrap_id bootstrap_name bootstrap_provider state_tmp
+  if jq -e '.ui.first_run_hint_shown_at? != null' "$SHM_STATE_FILE" >/dev/null 2>&1; then
+    return 0
+  fi
+  installed_count="$(jq -r '(.installed // {}) | length' "$SHM_STATE_FILE")"
+  bootstrap_id="$(jq -r '.bootstrap.dataset_id // ""' "$SHM_STATE_FILE")"
+  bootstrap_name="$(jq -r '.bootstrap.dataset_name // ""' "$SHM_STATE_FILE")"
+  bootstrap_provider="$(jq -r '.bootstrap.provider // ""' "$SHM_STATE_FILE")"
+  if [[ "$installed_count" == "1" && -n "$bootstrap_id" ]]; then
+    whiptail --title "Welcome to Self Hosted Maps" --msgbox "Your first dataset is installed and ready.\n\nBootstrap dataset: ${bootstrap_name:-$bootstrap_id}\nDataset ID: $bootstrap_id\nProvider: ${bootstrap_provider:-unknown}\n\nUse this manager to install more datasets, change the selected set, check for updates, and rebuild the served map." 16 78
+    state_tmp="$(mktemp)"
+    jq --arg ts "$(date -u +%FT%TZ)" '.ui.first_run_hint_shown_at = $ts' "$SHM_STATE_FILE" > "$state_tmp"
+    mv "$state_tmp" "$SHM_STATE_FILE"
+  fi
+}
+
 show_installed() {
   local tmp selected_summary rebuilt_at current_summary
   tmp="$(mktemp)"
@@ -207,6 +224,8 @@ rebuild_ui() {
   "$SHM_BIN_DIR/rebuild-selected.sh"
   whiptail --title "Rebuild Current Map" --msgbox "Rebuild finished. Check ${SHM_LOG_ROOT}/rebuild-selected.log for details." 10 80
 }
+
+show_first_run_hint_if_needed
 
 while true; do
   choice="$(whiptail --title "Self Hosted Maps Manager" --menu "Choose an action" 23 86 13 \
