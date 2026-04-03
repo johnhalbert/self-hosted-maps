@@ -67,14 +67,19 @@ mv "${SHM_DATA_ROOT}/current" "${SHM_DATA_ROOT}/current.prev" 2>/dev/null || tru
 mv "$TMP_DIR" "${SHM_DATA_ROOT}/current"
 rm -rf "${SHM_DATA_ROOT}/current.prev"
 
-SELECTED_HASH="$(printf '%s\n' "${SELECTED_IDS[@]}" | sort | sha256sum | awk '{print $1}')"
+mapfile -t SORTED_IDS < <(printf '%s\n' "${SELECTED_IDS[@]}" | sort -u)
+DATASET_IDS_JSON="$(printf '%s\n' "${SORTED_IDS[@]}" | jq -Rsc 'split("\n")[:-1]')"
+SELECTED_HASH="$(printf '%s\n' "${SORTED_IDS[@]}" | sha256sum | awk '{print $1}')"
+
 STATE_TMP="$(mktemp)"
 jq --arg hash "$SELECTED_HASH" \
    --arg artifact "${SHM_DATA_ROOT}/current/openmaptiles.mbtiles" \
-   --arg rebuilt_at "$(date -u +%FT%TZ)" '
+   --arg rebuilt_at "$(date -u +%FT%TZ)" \
+   --argjson dataset_ids "$DATASET_IDS_JSON" '
   .current.selected_hash = $hash
   | .current.artifact_path = $artifact
   | .current.rebuilt_at = $rebuilt_at
+  | .current.dataset_ids = $dataset_ids
 ' "$SHM_STATE_FILE" > "$STATE_TMP"
 mv "$STATE_TMP" "$SHM_STATE_FILE"
 
