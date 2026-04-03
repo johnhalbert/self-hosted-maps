@@ -31,28 +31,45 @@ choose_catalog_dataset() {
 }
 
 choose_installed_dataset() {
-  local rows row id name provider status pbf_size dataset_size installed_at args choice
+  local title rows filtered_rows row id name provider status pbf_size dataset_size installed_at args choice filter_query filter_lower
+  title="${1:-Installed Datasets}"
+  filter_query="$(whiptail --title "$title" --inputbox "Filter installed datasets by id, name, provider, or status. Leave blank to browse all." 10 90 3>&1 1>&2 2>&3)" || return 1
+  filter_lower="$(printf '%s' "$filter_query" | tr '[:upper:]' '[:lower:]')"
   mapfile -t rows < <("$SHM_BIN_DIR/list-installed.sh")
   if [[ "${#rows[@]}" -eq 0 ]]; then
-    whiptail --title "Installed Datasets" --msgbox "No datasets are installed yet." 10 60
+    whiptail --title "$title" --msgbox "No datasets are installed yet." 10 60
+    return 1
+  fi
+  filtered_rows=()
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r id name provider status pbf_size dataset_size installed_at <<<"$row"
+    haystack="$(printf '%s %s %s %s' "$id" "$name" "$provider" "$status" | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "$filter_lower" || "$haystack" == *"$filter_lower"* ]]; then
+      filtered_rows+=("$row")
+    fi
+  done
+  if [[ "${#filtered_rows[@]}" -eq 0 ]]; then
+    whiptail --title "$title" --msgbox "No installed datasets matched your filter." 10 70
     return 1
   fi
   args=()
-  for row in "${rows[@]}"; do
+  for row in "${filtered_rows[@]}"; do
     IFS=$'\t' read -r id name provider status pbf_size dataset_size installed_at <<<"$row"
     args+=("$id" "$name [$status, $dataset_size]")
   done
-  choice="$(whiptail --title "Installed Datasets" --menu "Choose a dataset" 25 110 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 1
+  choice="$(whiptail --title "$title" --menu "Choose a dataset" 25 110 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 1
   printf '%s\n' "$choice"
 }
 
 show_installed() {
-  local tmp selected_summary rebuilt_at
+  local tmp selected_summary rebuilt_at current_summary
   tmp="$(mktemp)"
   selected_summary="$(jq -r '(.selected // []) | if length == 0 then "(none)" else join(", ") end' "$SHM_STATE_FILE")"
+  current_summary="$(jq -r '(.current.dataset_ids // []) | if length == 0 then "(none)" else join(", ") end' "$SHM_STATE_FILE")"
   rebuilt_at="$(jq -r '.current.rebuilt_at // "(never)"' "$SHM_STATE_FILE")"
   {
     printf 'Selected datasets: %s\n' "$selected_summary"
+    printf 'Current served datasets: %s\n' "$current_summary"
     printf 'Current map rebuilt at: %s\n\n' "$rebuilt_at"
     printf 'ID\tNAME\tPROVIDER\tSTATUS\tPBF_SIZE\tDATASET_SIZE\tINSTALLED_AT\n'
     "$SHM_BIN_DIR/list-installed.sh"
@@ -63,7 +80,7 @@ show_installed() {
 
 show_installed_details_ui() {
   local dataset_id tmp
-  dataset_id="$(choose_installed_dataset)" || return 0
+  dataset_id="$(choose_installed_dataset "Installed Dataset Details")" || return 0
   tmp="$(mktemp)"
   "$SHM_BIN_DIR/show-installed-details.sh" "$dataset_id" | jq . > "$tmp"
   whiptail --title "Installed Dataset Details" --textbox "$tmp" 28 120
@@ -86,7 +103,7 @@ select_active() {
     fi
     args+=("$id" "$name [$dataset_size]" "$state")
   done
-  output="$(whiptail --title "Select Active Datasets" --checklist "Choose which installed datasets participate in the current merged map" 25 110 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 0
+  output="$(whiptail --title "Select Active Datasets" --checklist "Choose which installed datasets participate in the next rebuild" 25 110 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 0
   cleaned="$(printf '%s' "$output" | tr ' ' '\n' | tr -d '"' | sed '/^$/d')"
   mapfile -t selected < <(printf '%s\n' "$cleaned")
   "$SHM_BIN_DIR/select-datasets.sh" "${selected[@]}" >/dev/null
@@ -95,7 +112,7 @@ select_active() {
 
 remove_dataset_ui() {
   local dataset_id
-  dataset_id="$(choose_installed_dataset)" || return 0
+  dataset_id="$(choose_installed_dataset "Remove Dataset")" || return 0
   if whiptail --title "Confirm Remove" --yesno "Remove dataset '$dataset_id' from local storage?" 10 70; then
     "$SHM_BIN_DIR/remove-dataset.sh" "$dataset_id" >/dev/null
     whiptail --title "Remove Dataset" --msgbox "Removed dataset '$dataset_id'." 10 60
@@ -110,7 +127,7 @@ install_dataset_ui() {
     mapfile -t current_selected < <(jq -r '.selected[]?' "$SHM_STATE_FILE")
     "$SHM_BIN_DIR/select-datasets.sh" "${current_selected[@]}" "$dataset_id" >/dev/null
   fi
-  if whiptail --title "Rebuild Current Map" --yesno "Rebuild the current merged map now?" 10 70; then
+  if confirm_rebuild_summary; then
     "$SHM_BIN_DIR/rebuild-selected.sh"
     whiptail --title "Rebuild Current Map" --msgbox "Rebuild finished. Check ${SHM_LOG_ROOT}/rebuild-selected.log for details." 10 80
   fi
@@ -141,23 +158,69 @@ check_updates_ui() {
   rm -f "$tmp"
 }
 
+update_dataset_ui() {
+  local dataset_id tmp status note rebuild_args update_json
+  dataset_id="$(choose_installed_dataset "Update Dataset")" || return 0
+  update_json="$($SHM_BIN_DIR/check-dataset-updates.sh "$dataset_id" --json --refresh-catalog | jq '.[0]')"
+  status="$(jq -r '.update_status // "unknown"' <<<"$update_json")"
+  note="$(jq -r '.note // ""' <<<"$update_json")"
+  tmp="$(mktemp)"
+  jq . <<<"$update_json" > "$tmp"
+  whiptail --title "Update Preview" --textbox "$tmp" 22 110
+  rm -f "$tmp"
+  if [[ "$status" == "up-to-date" ]]; then
+    if ! whiptail --title "Update Dataset" --yesno "Dataset '$dataset_id' appears up to date. Redownload it anyway?" 10 70; then
+      return 0
+    fi
+  else
+    if ! whiptail --title "Update Dataset" --yesno "Update dataset '$dataset_id' now?\n\nStatus: $status\nNote: $note" 12 80; then
+      return 0
+    fi
+  fi
+  rebuild_args=()
+  if jq -e --arg id "$dataset_id" '(.selected // []) | index($id) != null' "$SHM_STATE_FILE" >/dev/null 2>&1; then
+    if whiptail --title "Update Dataset" --yesno "Dataset '$dataset_id' is selected. Rebuild the current map after updating?" 10 75; then
+      rebuild_args+=(--rebuild)
+    fi
+  fi
+  "$SHM_BIN_DIR/update-dataset.sh" "$dataset_id" --refresh-catalog "${rebuild_args[@]}"
+  whiptail --title "Update Dataset" --msgbox "Updated dataset '$dataset_id'." 10 60
+}
+
+confirm_rebuild_summary() {
+  local selected_count summary rebuilt_at message
+  selected_count="$(jq -r '(.selected // []) | length' "$SHM_STATE_FILE")"
+  if [[ "$selected_count" == "0" ]]; then
+    whiptail --title "Rebuild Current Map" --msgbox "No datasets are currently selected." 10 60
+    return 1
+  fi
+  summary="$(jq -r '(.selected // []) | join(", ")' "$SHM_STATE_FILE")"
+  rebuilt_at="$(jq -r '.current.rebuilt_at // "(never)"' "$SHM_STATE_FILE")"
+  message="Selected datasets: $summary\n\nSelected count: $selected_count\nCurrent map rebuilt at: $rebuilt_at\n\nProceed with rebuild?"
+  whiptail --title "Rebuild Current Map" --yesno "$message" 15 90
+}
+
 rebuild_ui() {
+  if ! confirm_rebuild_summary; then
+    return 0
+  fi
   "$SHM_BIN_DIR/rebuild-selected.sh"
   whiptail --title "Rebuild Current Map" --msgbox "Rebuild finished. Check ${SHM_LOG_ROOT}/rebuild-selected.log for details." 10 80
 }
 
 while true; do
-  choice="$(whiptail --title "Self Hosted Maps Manager" --menu "Choose an action" 22 84 12 \
+  choice="$(whiptail --title "Self Hosted Maps Manager" --menu "Choose an action" 23 86 13 \
     1 "Browse catalog" \
     2 "Install dataset" \
     3 "Show installed datasets" \
     4 "Show installed dataset details" \
     5 "Select active datasets" \
     6 "Check dataset updates" \
-    7 "Rebuild current map" \
-    8 "Remove dataset" \
-    9 "Refresh catalog" \
-    10 "Exit" 3>&1 1>&2 2>&3)" || exit 0
+    7 "Update dataset" \
+    8 "Rebuild current map" \
+    9 "Remove dataset" \
+    10 "Refresh catalog" \
+    11 "Exit" 3>&1 1>&2 2>&3)" || exit 0
   case "$choice" in
     1) browse_catalog_ui ;;
     2) install_dataset_ui ;;
@@ -165,9 +228,10 @@ while true; do
     4) show_installed_details_ui ;;
     5) select_active ;;
     6) check_updates_ui ;;
-    7) rebuild_ui ;;
-    8) remove_dataset_ui ;;
-    9) refresh_catalog_ui ;;
-    10) exit 0 ;;
+    7) update_dataset_ui ;;
+    8) rebuild_ui ;;
+    9) remove_dataset_ui ;;
+    10) refresh_catalog_ui ;;
+    11) exit 0 ;;
   esac
 done
