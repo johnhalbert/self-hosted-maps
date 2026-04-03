@@ -36,7 +36,7 @@ bootstrap=false
 if jq -e --arg id "$DATASET_ID" '(.selected // []) | index($id) != null' "$SHM_STATE_FILE" >/dev/null 2>&1; then
   selected=true
 fi
-if $selected && jq -e '.current.rebuilt_at != null and .current.artifact_path != null' "$SHM_STATE_FILE" >/dev/null 2>&1; then
+if jq -e --arg id "$DATASET_ID" '(.current.dataset_ids // []) | index($id) != null' "$SHM_STATE_FILE" >/dev/null 2>&1; then
   part_of_current=true
 fi
 if jq -e --arg id "$DATASET_ID" '.bootstrap.dataset_id? == $id' "$SHM_STATE_FILE" >/dev/null 2>&1; then

@@ -85,4 +85,10 @@ bash "$REPO_ROOT/scripts/register-cron.sh"
 bash "$REPO_ROOT/scripts/post-install-discoverability.sh"
 
 viewer_ip="$(hostname -I | awk '{print $1}')"
-success_box "Installation complete.\n\nViewer: http://${viewer_ip}/\nTiles JSON: http://${viewer_ip}/data/openmaptiles.json\nManager command: self-hosted-maps-manager\nManager path: ${install_root}/bin/map-manager.sh\nUsage guide: ${config_root}/manager-usage.txt\nConfig: ${config_root}/self-hosted-maps.conf"
+success_box "Installation complete.\n\nBootstrap dataset: ${bootstrap_dataset_name} (${bootstrap_dataset_id})\nProvider: ${bootstrap_provider}\nViewer: http://${viewer_ip}/\nTiles JSON: http://${viewer_ip}/data/openmaptiles.json\nManager command: self-hosted-maps-manager\nManager path: ${install_root}/bin/map-manager.sh\nUsage guide: ${config_root}/manager-usage.txt\nConfig: ${config_root}/self-hosted-maps.conf"
+
+if [[ -t 0 && -t 1 ]] && command -v self-hosted-maps-manager >/dev/null 2>&1; then
+  if whiptail --title "Launch Manager" --yesno "Launch the map manager now?" 10 60; then
+    self-hosted-maps-manager
+  fi
+fi

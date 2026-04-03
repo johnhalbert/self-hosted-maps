@@ -28,6 +28,7 @@ done
 
 DATASET_JSON="$($SHM_BIN_DIR/find-dataset.sh "$DATASET_ID")"
 NAME="$(jq -r '.name' <<<"$DATASET_JSON")"
+PROVIDER="$(jq -r '.provider' <<<"$DATASET_JSON")"
 PARENT="$(jq -r '.parent' <<<"$DATASET_JSON")"
 URL="$(jq -r '.download_url' <<<"$DATASET_JSON")"
 BOUNDS_JSON="$(jq -c '.bounds // []' <<<"$DATASET_JSON")"
@@ -47,7 +48,7 @@ fi
 META_JSON="$(jq -n \
   --arg id "$DATASET_ID" \
   --arg name "$NAME" \
-  --arg provider "geofabrik" \
+  --arg provider "$PROVIDER" \
   --arg parent "$PARENT" \
   --arg url "$URL" \
   --arg pbf "$PBF_PATH" \

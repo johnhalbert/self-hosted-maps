@@ -16,12 +16,6 @@ human_size() {
   numfmt --to=iec-i --suffix=B "$bytes" 2>/dev/null || printf '%sB\n' "$bytes"
 }
 
-state_json="$(cat "$SHM_STATE_FILE")"
-current_ready=false
-if jq -e '.current.rebuilt_at != null and .current.artifact_path != null' <<<"$state_json" >/dev/null 2>&1; then
-  current_ready=true
-fi
-
 jq -r '.installed | keys[]?' "$SHM_STATE_FILE" | while IFS= read -r dataset_id; do
   name="$(jq -r --arg id "$dataset_id" '.installed[$id].name // $id' "$SHM_STATE_FILE")"
   provider="$(jq -r --arg id "$dataset_id" '.installed[$id].provider // "unknown"' "$SHM_STATE_FILE")"
@@ -32,11 +26,11 @@ jq -r '.installed | keys[]?' "$SHM_STATE_FILE" | while IFS= read -r dataset_id; 
   status_parts=()
   if jq -e --arg id "$dataset_id" '(.selected // []) | index($id) != null' "$SHM_STATE_FILE" >/dev/null 2>&1; then
     status_parts+=(selected)
-    if $current_ready; then
-      status_parts+=(current)
-    fi
   else
     status_parts+=(installed)
+  fi
+  if jq -e --arg id "$dataset_id" '(.current.dataset_ids // []) | index($id) != null' "$SHM_STATE_FILE" >/dev/null 2>&1; then
+    status_parts+=(current)
   fi
   if jq -e --arg id "$dataset_id" '.bootstrap.dataset_id? == $id' "$SHM_STATE_FILE" >/dev/null 2>&1; then
     status_parts+=(bootstrap)
