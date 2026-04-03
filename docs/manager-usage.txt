@@ -1,0 +1,28 @@
+Self Hosted Maps
+================
+
+Manager command:
+  self-hosted-maps-manager
+
+Direct installed path:
+  /opt/self-hosted-maps/bin/map-manager.sh
+
+Useful commands:
+  self-hosted-maps-manager
+  self-hosted-maps-rebuild
+  self-hosted-maps-refresh-catalog
+  self-hosted-maps-list-installed
+
+State file:
+  /etc/self-hosted-maps/datasets.json
+
+Current served tileset:
+  /var/lib/self-hosted-maps/current/openmaptiles.mbtiles
+
+Viewer:
+  http://<server-ip>/
+
+Notes:
+- The installer bootstraps the first dataset into the dataset state automatically.
+- Additional datasets can be installed later from the manager.
+- Rebuilding the served map from selected datasets is an explicit action.
