@@ -20,6 +20,7 @@ apt-get install -y \
   cron \
   whiptail \
   dialog \
+  bsdextrautils \
   build-essential \
   cmake \
   pkg-config \
@@ -35,5 +36,11 @@ apt-get install -y \
   python3-pip \
   python3-setuptools \
   nginx
+
+command -v column >/dev/null 2>&1 || { echo "Missing required command: column" >&2; exit 1; }
+command -v numfmt >/dev/null 2>&1 || { echo "Missing required command: numfmt" >&2; exit 1; }
+command -v stat >/dev/null 2>&1 || { echo "Missing required command: stat" >&2; exit 1; }
+command -v du >/dev/null 2>&1 || { echo "Missing required command: du" >&2; exit 1; }
+
 systemctl enable cron
 systemctl restart cron
