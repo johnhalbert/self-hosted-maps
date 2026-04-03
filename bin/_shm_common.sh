@@ -17,6 +17,8 @@ SHM_BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHM_STATE_FILE="${SHM_STATE_FILE:-${SHM_CONFIG_ROOT}/datasets.json}"
 SHM_CATALOG_DIR="${SHM_CATALOG_DIR:-${SHM_DATA_ROOT}/cache/catalog}"
 SHM_GEOFABRIK_CATALOG="${SHM_GEOFABRIK_CATALOG:-${SHM_CATALOG_DIR}/geofabrik-index-v1-nogeom.json}"
+SHM_BBBIKE_INDEX_HTML="${SHM_BBBIKE_INDEX_HTML:-${SHM_CATALOG_DIR}/bbbike-index.html}"
+SHM_NORMALIZED_CATALOG="${SHM_NORMALIZED_CATALOG:-${SHM_CATALOG_DIR}/catalog.json}"
 SHM_DATASETS_DIR="${SHM_DATASETS_DIR:-${SHM_DATA_ROOT}/datasets}"
 SHM_SELECTED_BUILD_DIR="${SHM_SELECTED_BUILD_DIR:-${SHM_DATA_ROOT}/builds/selected}"
 
@@ -37,7 +39,8 @@ ensure_state_file() {
     cat > "$SHM_STATE_FILE" <<'JSON'
 {
   "catalog": {
-    "provider": "geofabrik",
+    "provider": "multi",
+    "providers": [],
     "fetched_at": null,
     "cache_path": null
   },
@@ -46,7 +49,8 @@ ensure_state_file() {
   "current": {
     "selected_hash": null,
     "artifact_path": null,
-    "rebuilt_at": null
+    "rebuilt_at": null,
+    "dataset_ids": []
   }
 }
 JSON
