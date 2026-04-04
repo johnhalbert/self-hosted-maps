@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if $REFRESH_CATALOG || [[ ! -f "$SHM_NORMALIZED_CATALOG" ]]; then
-  "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
+  bash "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
 fi
 
 human_size() {

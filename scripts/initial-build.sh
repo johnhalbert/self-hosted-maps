@@ -8,7 +8,7 @@ if [[ -f "${SHM_DATA_ROOT}/current/openmaptiles.mbtiles" ]]; then
   log "MBTiles already exists, skipping initial build"
 else
   log "No MBTiles found, running initial build"
-  "${SHM_INSTALL_ROOT}/bin/update-data.sh"
+  bash "${SHM_INSTALL_ROOT}/bin/update-data.sh"
 fi
 
 log "Starting tile server"

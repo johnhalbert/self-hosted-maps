@@ -18,14 +18,14 @@ case "$BOOTSTRAP_MODE" in
       echo "Catalog bootstrap requires SHM_BOOTSTRAP_DATASET_ID" >&2
       exit 1
     fi
-    "${SHM_INSTALL_ROOT}/bin/install-dataset.sh" "$BOOTSTRAP_ID" --select --rebuild
+    bash "${SHM_INSTALL_ROOT}/bin/install-dataset.sh" "$BOOTSTRAP_ID" --select --rebuild
     ;;
   custom|world)
     if [[ -z "$BOOTSTRAP_ID" || -z "$BOOTSTRAP_NAME" ]]; then
       echo "$BOOTSTRAP_MODE bootstrap requires SHM_BOOTSTRAP_DATASET_ID and SHM_BOOTSTRAP_DATASET_NAME" >&2
       exit 1
     fi
-    "${SHM_INSTALL_ROOT}/bin/install-dataset-url.sh" "$BOOTSTRAP_ID" "$BOOTSTRAP_NAME" "$BOOTSTRAP_URL" --provider "$BOOTSTRAP_PROVIDER" --select --rebuild
+    bash "${SHM_INSTALL_ROOT}/bin/install-dataset-url.sh" "$BOOTSTRAP_ID" "$BOOTSTRAP_NAME" "$BOOTSTRAP_URL" --provider "$BOOTSTRAP_PROVIDER" --select --rebuild
     ;;
   *)
     echo "Unknown bootstrap mode: $BOOTSTRAP_MODE" >&2

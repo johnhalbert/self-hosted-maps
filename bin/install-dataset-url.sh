@@ -88,7 +88,7 @@ fi
 mv "$STATE_TMP" "$SHM_STATE_FILE"
 
 if $REBUILD_AFTER; then
-  "$SHM_BIN_DIR/rebuild-selected.sh"
+  bash "$SHM_BIN_DIR/rebuild-selected.sh"
 fi
 
 log "Installed dataset $DATASET_ID ($DATASET_NAME)"
