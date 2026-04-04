@@ -43,7 +43,7 @@ jq '[
 ]' "$SHM_GEOFABRIK_CATALOG" > "$TMP_GEOFABRIK"
 
 grep -oE 'href="[A-Za-z0-9._-]+/"' "$SHM_BBBIKE_INDEX_HTML" \
-  | sed -E 's/^href="//; s/\/$//; s/"$//' \
+  | sed -E 's/^href="//; s/"$//; s/\/$//' \
   | sort -u \
   | jq -Rsc '[
       split("\n")[:-1]
