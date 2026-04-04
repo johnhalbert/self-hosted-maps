@@ -9,8 +9,15 @@ require_cmd whiptail
 require_cmd jq
 require_cmd column
 
+humanize_catalog_name() {
+  local value="$1"
+  printf '%s' "$value" \
+    | sed -E 's/[_-]+/ /g; s/([[:lower:][:digit:]])([[:upper:]])/\1 \2/g; s/([[:upper:]])([[:upper:]][[:lower:]])/\1 \2/g; s/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
 choose_catalog_dataset() {
-  local query rows row id name parent url args choice
+  local query rows row id name parent url args choice human_name tag suffix n
+  declare -A tag_to_id=()
   query="$(whiptail --title "Catalog Search" --inputbox "Filter datasets by name, id, or parent. Leave blank to browse." 10 80 3>&1 1>&2 2>&3)" || return 1
   mapfile -t rows < <(bash "$SHM_BIN_DIR/list-catalog.sh" "$query" | head -200)
   if [[ "${#rows[@]}" -eq 0 ]]; then
@@ -20,14 +27,22 @@ choose_catalog_dataset() {
   args=()
   for row in "${rows[@]}"; do
     IFS=$'\t' read -r id name parent url <<<"$row"
-    if [[ -n "$parent" ]]; then
-      args+=("$id" "$name [$parent]")
-    else
-      args+=("$id" "$name")
+    human_name="$(humanize_catalog_name "$name")"
+    tag="$human_name"
+    if [[ -n "${tag_to_id[$tag]+x}" ]]; then
+      suffix="$id"
+      tag="${human_name} [$suffix]"
+      n=2
+      while [[ -n "${tag_to_id[$tag]+x}" ]]; do
+        tag="${human_name} [$suffix $n]"
+        ((n++))
+      done
     fi
+    tag_to_id["$tag"]="$id"
+    args+=("$tag" "${url:-$human_name}")
   done
-  choice="$(whiptail --title "Catalog" --menu "Choose a dataset to inspect or install" 25 110 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 1
-  printf '%s\n' "$choice"
+  choice="$(whiptail --title "Catalog" --menu "Choose a dataset to inspect or install" 25 140 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 1
+  printf '%s\n' "${tag_to_id[$choice]}"
 }
 
 choose_installed_dataset() {

@@ -11,6 +11,12 @@ ensure_catalog_deps() {
   fi
 }
 
+humanize_catalog_name() {
+  local value="$1"
+  printf '%s' "$value" \
+    | sed -E 's/[_-]+/ /g; s/([[:lower:][:digit:]])([[:upper:]])/\1 \2/g; s/([[:upper:]])([[:upper:]][[:lower:]])/\1 \2/g; s/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
 choose_bootstrap_mode() {
   whiptail --title "Initial Dataset" --menu "Choose how to bootstrap the initial map:" 18 90 8 \
     world "Use the full OSM planet PBF" \
@@ -20,7 +26,8 @@ choose_bootstrap_mode() {
 
 choose_catalog_dataset_id() {
   local repo_root="$1"
-  local query rows row id name parent url args choice
+  local query rows row id name parent url args choice human_name tag suffix n
+  declare -A tag_to_id=()
 
   ensure_catalog_deps
   bash "$repo_root/bin/fetch-catalog.sh" >/dev/null
@@ -35,15 +42,23 @@ choose_catalog_dataset_id() {
   args=()
   for row in "${rows[@]}"; do
     IFS=$'\t' read -r id name parent url <<<"$row"
-    if [[ -n "$parent" ]]; then
-      args+=("$id" "$name [$parent]")
-    else
-      args+=("$id" "$name")
+    human_name="$(humanize_catalog_name "$name")"
+    tag="$human_name"
+    if [[ -n "${tag_to_id[$tag]+x}" ]]; then
+      suffix="$id"
+      tag="${human_name} [$suffix]"
+      n=2
+      while [[ -n "${tag_to_id[$tag]+x}" ]]; do
+        tag="${human_name} [$suffix $n]"
+        ((n++))
+      done
     fi
+    tag_to_id["$tag"]="$id"
+    args+=("$tag" "${url:-$human_name}")
   done
 
-  choice="$(whiptail --title "Catalog" --menu "Choose a dataset to install first" 25 110 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 1
-  printf '%s\n' "$choice"
+  choice="$(whiptail --title "Catalog" --menu "Choose a dataset to install first" 25 140 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 1
+  printf '%s\n' "${tag_to_id[$choice]}"
 }
 
 choose_custom_dataset_name() {
