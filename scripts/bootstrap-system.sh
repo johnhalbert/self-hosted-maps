@@ -30,6 +30,8 @@ apt-get install -y \
   lua5.3 \
   libsqlite3-dev \
   sqlite3 \
+  libshp-dev \
+  rapidjson-dev \
   osmium-tool \
   python3 \
   python3-venv \
