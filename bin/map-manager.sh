@@ -12,7 +12,7 @@ require_cmd column
 choose_catalog_dataset() {
   local query rows row id name parent url args choice
   query="$(whiptail --title "Catalog Search" --inputbox "Filter datasets by name, id, or parent. Leave blank to browse." 10 80 3>&1 1>&2 2>&3)" || return 1
-  mapfile -t rows < <("$SHM_BIN_DIR/list-catalog.sh" "$query" | head -200)
+  mapfile -t rows < <(bash "$SHM_BIN_DIR/list-catalog.sh" "$query" | head -200)
   if [[ "${#rows[@]}" -eq 0 ]]; then
     whiptail --title "Catalog" --msgbox "No datasets matched your query." 10 60
     return 1
@@ -35,7 +35,7 @@ choose_installed_dataset() {
   title="${1:-Installed Datasets}"
   filter_query="$(whiptail --title "$title" --inputbox "Filter installed datasets by id, name, provider, or status. Leave blank to browse all." 10 90 3>&1 1>&2 2>&3)" || return 1
   filter_lower="$(printf '%s' "$filter_query" | tr '[:upper:]' '[:lower:]')"
-  mapfile -t rows < <("$SHM_BIN_DIR/list-installed.sh")
+  mapfile -t rows < <(bash "$SHM_BIN_DIR/list-installed.sh")
   if [[ "${#rows[@]}" -eq 0 ]]; then
     whiptail --title "$title" --msgbox "No datasets are installed yet." 10 60
     return 1
@@ -89,7 +89,7 @@ show_installed() {
     printf 'Current served datasets: %s\n' "$current_summary"
     printf 'Current map rebuilt at: %s\n\n' "$rebuilt_at"
     printf 'ID\tNAME\tPROVIDER\tSTATUS\tPBF_SIZE\tDATASET_SIZE\tINSTALLED_AT\n'
-    "$SHM_BIN_DIR/list-installed.sh"
+    bash "$SHM_BIN_DIR/list-installed.sh"
   } | column -ts $'\t' > "$tmp"
   whiptail --title "Installed Datasets" --textbox "$tmp" 28 140
   rm -f "$tmp"
@@ -99,14 +99,14 @@ show_installed_details_ui() {
   local dataset_id tmp
   dataset_id="$(choose_installed_dataset "Installed Dataset Details")" || return 0
   tmp="$(mktemp)"
-  "$SHM_BIN_DIR/show-installed-details.sh" "$dataset_id" | jq . > "$tmp"
+  bash "$SHM_BIN_DIR/show-installed-details.sh" "$dataset_id" | jq . > "$tmp"
   whiptail --title "Installed Dataset Details" --textbox "$tmp" 28 120
   rm -f "$tmp"
 }
 
 select_active() {
   local rows row id name provider status pbf_size dataset_size installed_at args state output cleaned selected
-  mapfile -t rows < <("$SHM_BIN_DIR/list-installed.sh")
+  mapfile -t rows < <(bash "$SHM_BIN_DIR/list-installed.sh")
   if [[ "${#rows[@]}" -eq 0 ]]; then
     whiptail --title "Select Active" --msgbox "No datasets are installed yet." 10 60
     return 0
@@ -123,7 +123,7 @@ select_active() {
   output="$(whiptail --title "Select Active Datasets" --checklist "Choose which installed datasets participate in the next rebuild" 25 110 15 "${args[@]}" 3>&1 1>&2 2>&3)" || return 0
   cleaned="$(printf '%s' "$output" | tr ' ' '\n' | tr -d '"' | sed '/^$/d')"
   mapfile -t selected < <(printf '%s\n' "$cleaned")
-  "$SHM_BIN_DIR/select-datasets.sh" "${selected[@]}" >/dev/null
+  bash "$SHM_BIN_DIR/select-datasets.sh" "${selected[@]}" >/dev/null
   whiptail --title "Select Active" --msgbox "Updated selected dataset set." 10 60
 }
 
@@ -131,7 +131,7 @@ remove_dataset_ui() {
   local dataset_id
   dataset_id="$(choose_installed_dataset "Remove Dataset")" || return 0
   if whiptail --title "Confirm Remove" --yesno "Remove dataset '$dataset_id' from local storage?" 10 70; then
-    "$SHM_BIN_DIR/remove-dataset.sh" "$dataset_id" >/dev/null
+    bash "$SHM_BIN_DIR/remove-dataset.sh" "$dataset_id" >/dev/null
     whiptail --title "Remove Dataset" --msgbox "Removed dataset '$dataset_id'." 10 60
   fi
 }
@@ -139,13 +139,13 @@ remove_dataset_ui() {
 install_dataset_ui() {
   local dataset_id
   dataset_id="$(choose_catalog_dataset)" || return 0
-  "$SHM_BIN_DIR/install-dataset.sh" "$dataset_id" >/dev/null
+  bash "$SHM_BIN_DIR/install-dataset.sh" "$dataset_id" >/dev/null
   if whiptail --title "Install Dataset" --yesno "Dataset '$dataset_id' installed. Add it to the selected set now?" 10 70; then
     mapfile -t current_selected < <(jq -r '.selected[]?' "$SHM_STATE_FILE")
-    "$SHM_BIN_DIR/select-datasets.sh" "${current_selected[@]}" "$dataset_id" >/dev/null
+    bash "$SHM_BIN_DIR/select-datasets.sh" "${current_selected[@]}" "$dataset_id" >/dev/null
   fi
   if confirm_rebuild_summary; then
-    "$SHM_BIN_DIR/rebuild-selected.sh"
+    bash "$SHM_BIN_DIR/rebuild-selected.sh"
     whiptail --title "Rebuild Current Map" --msgbox "Rebuild finished. Check ${SHM_LOG_ROOT}/rebuild-selected.log for details." 10 80
   fi
 }
@@ -154,13 +154,13 @@ browse_catalog_ui() {
   local dataset_id tmp
   dataset_id="$(choose_catalog_dataset)" || return 0
   tmp="$(mktemp)"
-  "$SHM_BIN_DIR/find-dataset.sh" "$dataset_id" | jq . > "$tmp"
+  bash "$SHM_BIN_DIR/find-dataset.sh" "$dataset_id" | jq . > "$tmp"
   whiptail --title "Catalog Dataset Details" --textbox "$tmp" 25 110
   rm -f "$tmp"
 }
 
 refresh_catalog_ui() {
-  "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
+  bash "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
   whiptail --title "Refresh Catalog" --msgbox "Catalog refreshed from Geofabrik." 10 60
 }
 
@@ -169,7 +169,7 @@ check_updates_ui() {
   tmp="$(mktemp)"
   {
     printf 'ID\tNAME\tUPDATE\tREMOTE_LAST_MODIFIED\tLOCAL_SIZE\tREMOTE_SIZE\tNOTE\n'
-    "$SHM_BIN_DIR/check-dataset-updates.sh" --refresh-catalog
+    bash "$SHM_BIN_DIR/check-dataset-updates.sh" --refresh-catalog
   } | column -ts $'\t' > "$tmp"
   whiptail --title "Dataset Update Check" --textbox "$tmp" 28 140
   rm -f "$tmp"
@@ -178,7 +178,7 @@ check_updates_ui() {
 update_dataset_ui() {
   local dataset_id tmp status note rebuild_args update_json
   dataset_id="$(choose_installed_dataset "Update Dataset")" || return 0
-  update_json="$($SHM_BIN_DIR/check-dataset-updates.sh "$dataset_id" --json --refresh-catalog | jq '.[0]')"
+  update_json="$(bash "$SHM_BIN_DIR/check-dataset-updates.sh" "$dataset_id" --json --refresh-catalog | jq '.[0]')"
   status="$(jq -r '.update_status // "unknown"' <<<"$update_json")"
   note="$(jq -r '.note // ""' <<<"$update_json")"
   tmp="$(mktemp)"
@@ -200,7 +200,7 @@ update_dataset_ui() {
       rebuild_args+=(--rebuild)
     fi
   fi
-  "$SHM_BIN_DIR/update-dataset.sh" "$dataset_id" --refresh-catalog "${rebuild_args[@]}"
+  bash "$SHM_BIN_DIR/update-dataset.sh" "$dataset_id" --refresh-catalog "${rebuild_args[@]}"
   whiptail --title "Update Dataset" --msgbox "Updated dataset '$dataset_id'." 10 60
 }
 
@@ -221,7 +221,7 @@ rebuild_ui() {
   if ! confirm_rebuild_summary; then
     return 0
   fi
-  "$SHM_BIN_DIR/rebuild-selected.sh"
+  bash "$SHM_BIN_DIR/rebuild-selected.sh"
   whiptail --title "Rebuild Current Map" --msgbox "Rebuild finished. Check ${SHM_LOG_ROOT}/rebuild-selected.log for details." 10 80
 }
 

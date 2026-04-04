@@ -53,7 +53,7 @@ if [[ -n "$pbf_path" && -f "$pbf_path" ]]; then
 fi
 
 if $REFRESH_CATALOG || [[ ! -f "$SHM_NORMALIZED_CATALOG" ]]; then
-  "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
+  bash "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
 fi
 
 new_url="$old_url"
@@ -62,7 +62,7 @@ new_parent="$(jq -r --arg id "$DATASET_ID" '.installed[$id].parent // ""' "$SHM_
 new_provider="$provider"
 new_name="$name"
 
-if dataset_json="$($SHM_BIN_DIR/find-dataset.sh "$DATASET_ID" 2>/dev/null)"; then
+if dataset_json="$(bash "$SHM_BIN_DIR/find-dataset.sh" "$DATASET_ID" 2>/dev/null)"; then
   new_url="$(jq -r '.download_url // empty' <<<"$dataset_json")"
   new_bounds="$(jq -c '.bounds // []' <<<"$dataset_json")"
   new_parent="$(jq -r '.parent // ""' <<<"$dataset_json")"
@@ -126,7 +126,7 @@ jq --arg id "$DATASET_ID" \
 mv "$STATE_TMP" "$SHM_STATE_FILE"
 
 if $REBUILD_AFTER && jq -e --arg id "$DATASET_ID" '(.selected // []) | index($id) != null' "$SHM_STATE_FILE" >/dev/null 2>&1; then
-  "$SHM_BIN_DIR/rebuild-selected.sh"
+  bash "$SHM_BIN_DIR/rebuild-selected.sh"
 fi
 
 log "Updated dataset $DATASET_ID ($new_name)"

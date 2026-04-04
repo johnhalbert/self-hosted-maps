@@ -26,7 +26,7 @@ for arg in "$@"; do
   esac
 done
 
-DATASET_JSON="$($SHM_BIN_DIR/find-dataset.sh "$DATASET_ID")"
+DATASET_JSON="$(bash "$SHM_BIN_DIR/find-dataset.sh" "$DATASET_ID")"
 NAME="$(jq -r '.name' <<<"$DATASET_JSON")"
 PROVIDER="$(jq -r '.provider' <<<"$DATASET_JSON")"
 PARENT="$(jq -r '.parent' <<<"$DATASET_JSON")"
@@ -81,7 +81,7 @@ fi
 mv "$STATE_TMP" "$SHM_STATE_FILE"
 
 if $REBUILD_AFTER; then
-  "$SHM_BIN_DIR/rebuild-selected.sh"
+  bash "$SHM_BIN_DIR/rebuild-selected.sh"
 fi
 
 log "Installed dataset $DATASET_ID ($NAME)"

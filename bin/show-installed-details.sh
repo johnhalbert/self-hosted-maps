@@ -53,7 +53,7 @@ if [[ -n "$dataset_dir" && -d "$dataset_dir" ]]; then
   dataset_size_bytes="$(du -sb "$dataset_dir" | awk '{print $1}')"
 fi
 
-update_json="$($SHM_BIN_DIR/check-dataset-updates.sh "$DATASET_ID" --json | jq '.[0]')"
+update_json="$(bash "$SHM_BIN_DIR/check-dataset-updates.sh" "$DATASET_ID" --json | jq '.[0]')"
 
 jq -n \
   --arg id "$DATASET_ID" \

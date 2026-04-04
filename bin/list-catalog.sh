@@ -8,7 +8,7 @@ require_cmd jq
 ensure_state_file
 
 if [[ ! -f "$SHM_NORMALIZED_CATALOG" ]]; then
-  "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
+  bash "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
 fi
 
 QUERY="${1:-}"
