@@ -13,7 +13,12 @@ fi
 : "${SHM_CONFIG_ROOT:=/etc/self-hosted-maps}"
 : "${SHM_LOG_ROOT:=/var/log/self-hosted-maps}"
 
-SHM_BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SHM_COMMON_SOURCE="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  SHM_COMMON_SOURCE="$(readlink -f "$SHM_COMMON_SOURCE" 2>/dev/null || printf '%s' "$SHM_COMMON_SOURCE")"
+fi
+
+SHM_BIN_DIR="$(cd "$(dirname "$SHM_COMMON_SOURCE")" && pwd)"
 SHM_STATE_FILE="${SHM_STATE_FILE:-${SHM_CONFIG_ROOT}/datasets.json}"
 SHM_CATALOG_DIR="${SHM_CATALOG_DIR:-${SHM_DATA_ROOT}/cache/catalog}"
 SHM_GEOFABRIK_CATALOG="${SHM_GEOFABRIK_CATALOG:-${SHM_CATALOG_DIR}/geofabrik-index-v1-nogeom.json}"

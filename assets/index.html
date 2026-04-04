@@ -27,6 +27,12 @@
   <div id="map"></div>
   <script src="/vendor/maplibre-gl.js"></script>
   <script>
+    const fallbackView = {
+      center: [-91.56, 31.63],
+      zoom: 10,
+      bounds: null
+    };
+
     const style = {
       version: 8,
       glyphs: '/fonts/{fontstack}/{range}.pbf',
@@ -178,15 +184,106 @@
       ]
     };
 
-    const map = new maplibregl.Map({
-      container: 'map',
-      style,
-      center: [-91.56, 31.63],
-      zoom: 10
-    });
+    async function loadInitialView() {
+      try {
+        const response = await fetch('/data/openmaptiles.json');
+        if (!response.ok) {
+          throw new Error(`TileJSON request failed with ${response.status}`);
+        }
+        const tilejson = await response.json();
+        const nextView = { ...fallbackView };
 
-    map.addControl(new maplibregl.NavigationControl());
-    const input = document.getElementById('coordSearch'); const button = document.getElementById('goBtn'); const message = document.getElementById('message'); function showMessage(text) { message.textContent = text; message.style.display = 'block'; setTimeout(() => { message.style.display = 'none'; }, 4000); } function parseCoordinates(value) { const parts = value.split(',').map(v => parseFloat(v.trim())); if (parts.length !== 2 || parts.some(Number.isNaN)) { return null; } const [a, b] = parts; if (Math.abs(a) <= 90 && Math.abs(b) <= 180) { return { lat: a, lng: b }; } if (Math.abs(a) <= 180 && Math.abs(b) <= 90) { return { lat: b, lng: a }; } return null; } function runSearch() { const value = input.value.trim(); if (!value) return; const coords = parseCoordinates(value); if (!coords) { showMessage('Only coordinate search is implemented right now.'); return; } map.flyTo({ center: [coords.lng, coords.lat], zoom: 13 }); } button.addEventListener('click', runSearch); input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { runSearch(); } });
+        if (Array.isArray(tilejson.center) && tilejson.center.length >= 2) {
+          nextView.center = [Number(tilejson.center[0]), Number(tilejson.center[1])];
+          if (tilejson.center.length >= 3 && Number.isFinite(Number(tilejson.center[2]))) {
+            nextView.zoom = Number(tilejson.center[2]);
+          }
+        }
+
+        if (Array.isArray(tilejson.bounds) && tilejson.bounds.length === 4) {
+          const bounds = tilejson.bounds.map(Number);
+          if (bounds.every(Number.isFinite)) {
+            nextView.bounds = [
+              [bounds[0], bounds[1]],
+              [bounds[2], bounds[3]]
+            ];
+          }
+        }
+
+        return nextView;
+      } catch (error) {
+        console.warn('Falling back to default map view.', error);
+        return fallbackView;
+      }
+    }
+
+    async function initMap() {
+      const initialView = await loadInitialView();
+      const map = new maplibregl.Map({
+        container: 'map',
+        style,
+        center: initialView.center,
+        zoom: initialView.zoom
+      });
+
+      map.addControl(new maplibregl.NavigationControl());
+
+      if (initialView.bounds) {
+        map.once('load', () => {
+          map.fitBounds(initialView.bounds, {
+            padding: 40,
+            animate: false
+          });
+        });
+      }
+
+      const input = document.getElementById('coordSearch');
+      const button = document.getElementById('goBtn');
+      const message = document.getElementById('message');
+
+      function showMessage(text) {
+        message.textContent = text;
+        message.style.display = 'block';
+        setTimeout(() => {
+          message.style.display = 'none';
+        }, 4000);
+      }
+
+      function parseCoordinates(value) {
+        const parts = value.split(',').map(v => parseFloat(v.trim()));
+        if (parts.length !== 2 || parts.some(Number.isNaN)) {
+          return null;
+        }
+        const [a, b] = parts;
+        if (Math.abs(a) <= 90 && Math.abs(b) <= 180) {
+          return { lat: a, lng: b };
+        }
+        if (Math.abs(a) <= 180 && Math.abs(b) <= 90) {
+          return { lat: b, lng: a };
+        }
+        return null;
+      }
+
+      function runSearch() {
+        const value = input.value.trim();
+        if (!value) return;
+        const coords = parseCoordinates(value);
+        if (!coords) {
+          showMessage('Only coordinate search is implemented right now.');
+          return;
+        }
+        map.flyTo({ center: [coords.lng, coords.lat], zoom: 13 });
+      }
+
+      button.addEventListener('click', runSearch);
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          runSearch();
+        }
+      });
+    }
+
+    initMap();
   </script>
 </body>
 </html>
