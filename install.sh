@@ -40,7 +40,7 @@ case "$bootstrap_mode" in
     ;;
   catalog)
     bootstrap_dataset_id="$(choose_catalog_dataset_id "$REPO_ROOT")"
-    dataset_json="$($REPO_ROOT/bin/find-dataset.sh "$bootstrap_dataset_id")"
+    dataset_json="$(bash "$REPO_ROOT/bin/find-dataset.sh" "$bootstrap_dataset_id")"
     pbf_url="$(jq -r '.download_url' <<<"$dataset_json")"
     bootstrap_dataset_name="$(jq -r '.name' <<<"$dataset_json")"
     bootstrap_provider="$(jq -r '.provider' <<<"$dataset_json")"
