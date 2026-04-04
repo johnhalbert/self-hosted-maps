@@ -19,7 +19,7 @@ choose_catalog_dataset() {
   local query rows row id name parent url args choice human_name tag suffix n
   declare -A tag_to_id=()
   query="$(whiptail --title "Catalog Search" --inputbox "Filter datasets by name, id, or parent. Leave blank to browse." 10 80 3>&1 1>&2 2>&3)" || return 1
-  mapfile -t rows < <(bash "$SHM_BIN_DIR/list-catalog.sh" "$query" | head -200)
+  mapfile -t rows < <(bash "$SHM_BIN_DIR/list-catalog.sh" "$query")
   if [[ "${#rows[@]}" -eq 0 ]]; then
     whiptail --title "Catalog" --msgbox "No datasets matched your query." 10 60
     return 1
