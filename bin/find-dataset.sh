@@ -10,7 +10,7 @@ ensure_state_file
 DATASET_ID="${1:?usage: find-dataset.sh <dataset-id>}"
 
 if [[ ! -f "$SHM_NORMALIZED_CATALOG" ]]; then
-  "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
+  bash "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
 fi
 
 jq -e --arg id "$DATASET_ID" '
