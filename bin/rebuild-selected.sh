@@ -9,6 +9,89 @@ require_cmd osmium
 require_cmd sqlite3
 ensure_state_file
 
+extract_bbox_from_pbf() {
+  local pbf_path="$1"
+  local bbox
+
+  bbox="$(osmium fileinfo -e "$pbf_path" 2>/dev/null | awk '
+    /^Data:/ {in_data=1; next}
+    in_data && /Bounding box:/ {
+      sub(/^.*Bounding box: \(/, "")
+      sub(/\).*$/, "")
+      gsub(/[[:space:]]/, "")
+      print
+      exit
+    }
+  ')"
+
+  if [[ -z "$bbox" ]]; then
+    bbox="$(osmium fileinfo -e "$pbf_path" 2>/dev/null | awk '
+      /^Header:/ {in_header=1; next}
+      /^Data:/ {in_header=0}
+      in_header && /^[[:space:]]+\(/ {
+        gsub(/[()[:space:]]/, "")
+        print
+        exit
+      }
+    ')"
+  fi
+
+  [[ -n "$bbox" ]] || return 1
+  printf '%s\n' "$bbox"
+}
+
+update_mbtiles_bounds_metadata() {
+  local mbtiles_path="$1"
+  shift
+  local pbf_paths=("$@")
+  local min_lon=""
+  local min_lat=""
+  local max_lon=""
+  local max_lat=""
+  local bbox bbox_min_lon bbox_min_lat bbox_max_lon bbox_max_lat current_center zoom_level center_lon center_lat bounds_value center_value
+
+  for pbf_path in "${pbf_paths[@]}"; do
+    bbox="$(extract_bbox_from_pbf "$pbf_path")" || {
+      echo "Unable to determine bounding box for $pbf_path" >&2
+      return 1
+    }
+
+    IFS=, read -r bbox_min_lon bbox_min_lat bbox_max_lon bbox_max_lat <<< "$bbox"
+
+    if [[ -z "$min_lon" ]]; then
+      min_lon="$bbox_min_lon"
+      min_lat="$bbox_min_lat"
+      max_lon="$bbox_max_lon"
+      max_lat="$bbox_max_lat"
+      continue
+    fi
+
+    min_lon="$(awk -v a="$min_lon" -v b="$bbox_min_lon" 'BEGIN { printf "%.7f", (a < b ? a : b) }')"
+    min_lat="$(awk -v a="$min_lat" -v b="$bbox_min_lat" 'BEGIN { printf "%.7f", (a < b ? a : b) }')"
+    max_lon="$(awk -v a="$max_lon" -v b="$bbox_max_lon" 'BEGIN { printf "%.7f", (a > b ? a : b) }')"
+    max_lat="$(awk -v a="$max_lat" -v b="$bbox_max_lat" 'BEGIN { printf "%.7f", (a > b ? a : b) }')"
+  done
+
+  center_lon="$(awk -v a="$min_lon" -v b="$max_lon" 'BEGIN { printf "%.7f", (a + b) / 2 }')"
+  center_lat="$(awk -v a="$min_lat" -v b="$max_lat" 'BEGIN { printf "%.7f", (a + b) / 2 }')"
+
+  current_center="$(sqlite3 "$mbtiles_path" "select value from metadata where name='center';")"
+  zoom_level="$(printf '%s\n' "$current_center" | awk -F, 'NF >= 3 && $3 ~ /^-?[0-9]+(\.[0-9]+)?$/ { print $3; exit }')"
+  [[ -n "$zoom_level" ]] || zoom_level="7"
+
+  bounds_value="${min_lon},${min_lat},${max_lon},${max_lat}"
+  center_value="${center_lon},${center_lat},${zoom_level}"
+
+  sqlite3 "$mbtiles_path" <<SQL
+DELETE FROM metadata WHERE name IN ('bounds', 'center');
+INSERT INTO metadata(name, value) VALUES ('bounds', '$bounds_value');
+INSERT INTO metadata(name, value) VALUES ('center', '$center_value');
+SQL
+
+  echo "Updated MBTiles metadata bounds to $bounds_value"
+  echo "Updated MBTiles metadata center to $center_value"
+}
+
 TILEMAKER_BIN="/usr/local/bin/tilemaker"
 if [[ ! -x "$TILEMAKER_BIN" ]]; then
   TILEMAKER_BIN="$(command -v tilemaker)"
@@ -58,6 +141,7 @@ fi
   --process "${SHM_INSTALL_ROOT}/config/tilemaker/process.lua"
 
 sqlite3 "$BUILD_DIR/openmaptiles.mbtiles" "select count(*) from tiles;" | grep -Eq '^[1-9][0-9]*$'
+update_mbtiles_bounds_metadata "$BUILD_DIR/openmaptiles.mbtiles" "${PBF_PATHS[@]}"
 
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
