@@ -75,7 +75,6 @@ export SHM_BOOTSTRAP_PROVIDER="$bootstrap_provider"
 export SHM_PBF_URL="$pbf_url"
 export SHM_UPDATE_SCHEDULE="$update_schedule"
 
-mkdir -p "$log_root/install"
 step_total=8
 
 run_install_step 1 "$step_total" "Install base system packages" "$log_root/install/01-bootstrap-system.log" bash "$REPO_ROOT/scripts/bootstrap-system.sh"

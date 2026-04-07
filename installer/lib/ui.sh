@@ -19,30 +19,7 @@ info_box() {
 }
 
 success_box() {
-  whiptail --title "Installation Complete" --msgbox "$1" 14 72
-}
-
-choose_region_mode() {
-  whiptail --title "Dataset Scope" --menu "Choose the initial dataset scope:" 15 72 5 \
-    world "Use the full OSM planet PBF" \
-    region "Use a specific region PBF" 3>&1 1>&2 2>&3
-}
-
-choose_region_url() {
-  local choice
-  choice=$(whiptail --title "Region Source" --menu "Choose a region source or custom URL:" 18 80 8 \
-    louisiana "Geofabrik Louisiana extract" \
-    texas "Geofabrik Texas extract" \
-    usa "Geofabrik US extract" \
-    north-america "Geofabrik North America extract" \
-    custom "Enter a custom .osm.pbf URL" 3>&1 1>&2 2>&3)
-  case "$choice" in
-    louisiana) echo "https://download.geofabrik.de/north-america/us/louisiana-latest.osm.pbf" ;;
-    texas) echo "https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf" ;;
-    usa) echo "https://download.geofabrik.de/north-america/us-latest.osm.pbf" ;;
-    north-america) echo "https://download.geofabrik.de/north-america-latest.osm.pbf" ;;
-    custom) whiptail --title "Custom PBF URL" --inputbox "Enter the full URL to a .osm.pbf file:" 10 80 3>&1 1>&2 2>&3 ;;
-  esac
+  whiptail --title "Installation Complete" --msgbox "$1" 20 78
 }
 
 choose_update_schedule() {
@@ -87,9 +64,11 @@ show_step_failure() {
   local step_title="$1"
   local log_file="$2"
   local display_file="$log_file"
+  local tmp_created=0
 
   if [[ ! -s "$display_file" ]]; then
     display_file="$(mktemp)"
+    tmp_created=1
     cat > "$display_file" <<EOF
 Step failed: $step_title
 
@@ -98,9 +77,9 @@ EOF
   fi
 
   whiptail --title "Install Step Failed" --msgbox "Step failed: ${step_title}\n\nThe step log will be shown next." 12 78
-  whiptail --title "Failure Log" --textbox "$display_file" 28 100
+  whiptail --title "Failure Log" --textbox "$display_file" 28 100 || true
 
-  if [[ "$display_file" != "$log_file" ]]; then
+  if (( tmp_created )); then
     rm -f "$display_file"
   fi
 }
@@ -117,9 +96,11 @@ run_install_step() {
 
   local rc_file
   rc_file="$(mktemp)"
+  echo "1" > "$rc_file"
 
   (
     set +e
+    trap '' PIPE
 
     "$@" > "$log_file" 2>&1 &
     local cmd_pid=$!
