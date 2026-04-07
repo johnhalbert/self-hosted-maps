@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+INSTALLER_UI_TITLE="Self Hosted Maps"
+
 ensure_ui_backend() {
   if ! command -v whiptail >/dev/null 2>&1; then
     apt-get update
@@ -9,11 +11,11 @@ ensure_ui_backend() {
 }
 
 welcome_screen() {
-  whiptail --title "Self Hosted Maps" --msgbox "This installer sets up a native map stack on Debian.\n\nV2 adds stronger preflight guidance and a cleaner viewer/tile split." 12 72
+  whiptail --title "$INSTALLER_UI_TITLE" --msgbox "This installer sets up a native map stack on Debian.\n\nV2 adds stronger preflight guidance and a cleaner viewer/tile split." 12 72
 }
 
 info_box() {
-  whiptail --title "Self Hosted Maps" --msgbox "$1" 12 72
+  whiptail --title "$INSTALLER_UI_TITLE" --msgbox "$1" 12 72
 }
 
 success_box() {
@@ -79,4 +81,109 @@ confirm_summary() {
   local pbf_url="$6"
   local update_schedule="$7"
   whiptail --title "Confirm Installation" --yesno "Install root: ${install_root}\nData root: ${data_root}\nConfig root: ${config_root}\nLog root: ${log_root}\nScope: ${region_mode}\nPBF URL: ${pbf_url}\nSchedule: ${update_schedule}\n\nProceed?" 18 90
+}
+
+show_step_failure() {
+  local step_title="$1"
+  local log_file="$2"
+  local display_file="$log_file"
+
+  if [[ ! -s "$display_file" ]]; then
+    display_file="$(mktemp)"
+    cat > "$display_file" <<EOF
+Step failed: $step_title
+
+No log output was captured for this step.
+EOF
+  fi
+
+  whiptail --title "Install Step Failed" --msgbox "Step failed: ${step_title}\n\nThe step log will be shown next." 12 78
+  whiptail --title "Failure Log" --textbox "$display_file" 28 100
+
+  if [[ "$display_file" != "$log_file" ]]; then
+    rm -f "$display_file"
+  fi
+}
+
+run_install_step() {
+  local step_index="$1"
+  local total_steps="$2"
+  local step_title="$3"
+  local log_file="$4"
+  shift 4
+
+  mkdir -p "$(dirname "$log_file")"
+  : > "$log_file"
+
+  local rc_file
+  rc_file="$(mktemp)"
+
+  (
+    set +e
+
+    "$@" > "$log_file" 2>&1 &
+    local cmd_pid=$!
+    local start_ts elapsed mins secs start_pct end_pct span tick pct rc final_pct
+
+    start_ts=$(date +%s)
+    start_pct=$(( (step_index - 1) * 100 / total_steps ))
+    end_pct=$(( step_index * 100 / total_steps ))
+    span=$(( end_pct - start_pct - 1 ))
+    if (( span < 1 )); then
+      span=1
+    fi
+
+    tick=0
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+      elapsed=$(( $(date +%s) - start_ts ))
+      mins=$(( elapsed / 60 ))
+      secs=$(( elapsed % 60 ))
+      pct=$(( start_pct + 1 + (tick % span) ))
+      if (( pct >= end_pct )); then
+        pct=$(( end_pct - 1 ))
+      fi
+      if (( pct < start_pct )); then
+        pct=$start_pct
+      fi
+
+      echo "XXX"
+      echo "$pct"
+      printf "Step %d of %d\n%s\n\nThis step is still running.\nElapsed: %02d:%02d\nLog: %s\n" "$step_index" "$total_steps" "$step_title" "$mins" "$secs" "$log_file"
+      echo "XXX"
+
+      tick=$(( tick + 1 ))
+      sleep 1
+    done
+
+    wait "$cmd_pid"
+    rc=$?
+    printf '%s' "$rc" > "$rc_file"
+
+    final_pct=$end_pct
+    if (( rc != 0 )); then
+      final_pct=$start_pct
+    fi
+
+    echo "XXX"
+    echo "$final_pct"
+    if (( rc == 0 )); then
+      printf "Step %d of %d\n%s\n\nCompleted successfully.\nLog: %s\n" "$step_index" "$total_steps" "$step_title" "$log_file"
+    else
+      printf "Step %d of %d\n%s\n\nFailed.\nLog: %s\n" "$step_index" "$total_steps" "$step_title" "$log_file"
+    fi
+    echo "XXX"
+    sleep 1
+  ) | whiptail --title "$INSTALLER_UI_TITLE Installer" --gauge "Preparing ${step_title}" 14 78 0
+
+  local rc=1
+  if [[ -f "$rc_file" ]]; then
+    rc="$(cat "$rc_file")"
+    rm -f "$rc_file"
+  fi
+
+  if (( rc != 0 )); then
+    show_step_failure "$step_title" "$log_file"
+  fi
+
+  return "$rc"
 }
