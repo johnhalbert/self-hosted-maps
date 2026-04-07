@@ -75,17 +75,19 @@ export SHM_BOOTSTRAP_PROVIDER="$bootstrap_provider"
 export SHM_PBF_URL="$pbf_url"
 export SHM_UPDATE_SCHEDULE="$update_schedule"
 
-bash "$REPO_ROOT/scripts/bootstrap-system.sh"
-bash "$REPO_ROOT/scripts/install-node.sh"
-bash "$REPO_ROOT/scripts/install-tilemaker.sh"
-bash "$REPO_ROOT/scripts/install-runtime.sh"
-bash "$REPO_ROOT/scripts/configure-system.sh"
-bash "$REPO_ROOT/scripts/bootstrap-selection.sh"
-bash "$REPO_ROOT/scripts/register-cron.sh"
-bash "$REPO_ROOT/scripts/post-install-discoverability.sh"
+step_total=8
+
+run_install_step 1 "$step_total" "Install base system packages" "$log_root/install/01-bootstrap-system.log" bash "$REPO_ROOT/scripts/bootstrap-system.sh"
+run_install_step 2 "$step_total" "Install Node.js and npm packages" "$log_root/install/02-install-node.log" bash "$REPO_ROOT/scripts/install-node.sh"
+run_install_step 3 "$step_total" "Build and install Tilemaker" "$log_root/install/03-install-tilemaker.log" bash "$REPO_ROOT/scripts/install-tilemaker.sh"
+run_install_step 4 "$step_total" "Install runtime scripts and assets" "$log_root/install/04-install-runtime.log" bash "$REPO_ROOT/scripts/install-runtime.sh"
+run_install_step 5 "$step_total" "Configure services and web server" "$log_root/install/05-configure-system.log" bash "$REPO_ROOT/scripts/configure-system.sh"
+run_install_step 6 "$step_total" "Download bootstrap dataset and build initial map" "$log_root/install/06-bootstrap-selection.log" bash "$REPO_ROOT/scripts/bootstrap-selection.sh"
+run_install_step 7 "$step_total" "Register scheduled rebuild job" "$log_root/install/07-register-cron.log" bash "$REPO_ROOT/scripts/register-cron.sh"
+run_install_step 8 "$step_total" "Install post-install shortcuts and usage hints" "$log_root/install/08-post-install-discoverability.log" bash "$REPO_ROOT/scripts/post-install-discoverability.sh"
 
 viewer_ip="$(hostname -I | awk '{print $1}')"
-success_box "Installation complete.\n\nBootstrap dataset: ${bootstrap_dataset_name} (${bootstrap_dataset_id})\nProvider: ${bootstrap_provider}\nViewer: http://${viewer_ip}/\nTiles JSON: http://${viewer_ip}/data/openmaptiles.json\nManager command: self-hosted-maps-manager\nManager path: ${install_root}/bin/map-manager.sh\nUsage guide: ${config_root}/manager-usage.txt\nConfig: ${config_root}/self-hosted-maps.conf"
+success_box "Installation complete.\n\nBootstrap dataset: ${bootstrap_dataset_name} (${bootstrap_dataset_id})\nProvider: ${bootstrap_provider}\nViewer: http://${viewer_ip}/\nTiles JSON: http://${viewer_ip}/data/openmaptiles.json\nManager command: self-hosted-maps-manager\nManager path: ${install_root}/bin/map-manager.sh\nUsage guide: ${config_root}/manager-usage.txt\nConfig: ${config_root}/self-hosted-maps.conf\nInstall logs: ${log_root}/install"
 
 if [[ -t 0 && -t 1 ]] && command -v self-hosted-maps-manager >/dev/null 2>&1; then
   if whiptail --title "Launch Manager" --yesno "Launch the map manager now?" 10 60; then
