@@ -100,7 +100,7 @@ run_install_step() {
 
   (
     set +e
-    trap '' PIPE
+    trap '' SIGPIPE
 
     "$@" > "$log_file" 2>&1 &
     local cmd_pid=$!
