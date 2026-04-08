@@ -4,9 +4,12 @@ set -euo pipefail
 INSTALLER_UI_TITLE="Self Hosted Maps"
 
 ensure_ui_backend() {
-  if ! command -v whiptail >/dev/null 2>&1; then
+  local missing=()
+  command -v whiptail >/dev/null 2>&1 || missing+=(whiptail)
+  command -v dialog  >/dev/null 2>&1 || missing+=(dialog)
+  if (( ${#missing[@]} > 0 )); then
     apt-get update
-    apt-get install -y whiptail dialog
+    apt-get install -y "${missing[@]}"
   fi
 }
 
@@ -19,7 +22,30 @@ info_box() {
 }
 
 success_box() {
-  whiptail --title "Installation Complete" --msgbox "$1" 20 78
+  whiptail --title "Installation Complete" --msgbox "$1" 14 72
+}
+
+choose_region_mode() {
+  whiptail --title "Dataset Scope" --menu "Choose the initial dataset scope:" 15 72 5 \
+    world "Use the full OSM planet PBF" \
+    region "Use a specific region PBF" 3>&1 1>&2 2>&3
+}
+
+choose_region_url() {
+  local choice
+  choice=$(whiptail --title "Region Source" --menu "Choose a region source or custom URL:" 18 80 8 \
+    louisiana "Geofabrik Louisiana extract" \
+    texas "Geofabrik Texas extract" \
+    usa "Geofabrik US extract" \
+    north-america "Geofabrik North America extract" \
+    custom "Enter a custom .osm.pbf URL" 3>&1 1>&2 2>&3)
+  case "$choice" in
+    louisiana) echo "https://download.geofabrik.de/north-america/us/louisiana-latest.osm.pbf" ;;
+    texas) echo "https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf" ;;
+    usa) echo "https://download.geofabrik.de/north-america/us-latest.osm.pbf" ;;
+    north-america) echo "https://download.geofabrik.de/north-america-latest.osm.pbf" ;;
+    custom) whiptail --title "Custom PBF URL" --inputbox "Enter the full URL to a .osm.pbf file:" 10 80 3>&1 1>&2 2>&3 ;;
+  esac
 }
 
 choose_update_schedule() {
@@ -64,11 +90,9 @@ show_step_failure() {
   local step_title="$1"
   local log_file="$2"
   local display_file="$log_file"
-  local tmp_created=0
 
   if [[ ! -s "$display_file" ]]; then
     display_file="$(mktemp)"
-    tmp_created=1
     cat > "$display_file" <<EOF
 Step failed: $step_title
 
@@ -76,10 +100,10 @@ No log output was captured for this step.
 EOF
   fi
 
-  whiptail --title "Install Step Failed" --msgbox "Step failed: ${step_title}\n\nThe step log will be shown next." 12 78
+  whiptail --title "Install Step Failed" --msgbox "Step failed: ${step_title}\n\nThe step log will be shown next." 12 78 || true
   whiptail --title "Failure Log" --textbox "$display_file" 28 100 || true
 
-  if (( tmp_created )); then
+  if [[ "$display_file" != "$log_file" ]]; then
     rm -f "$display_file"
   fi
 }
@@ -94,72 +118,32 @@ run_install_step() {
   mkdir -p "$(dirname "$log_file")"
   : > "$log_file"
 
-  local rc_file
+  local rc_file prompt
   rc_file="$(mktemp)"
   echo "1" > "$rc_file"
+  prompt="Step ${step_index} of ${total_steps} — ${step_title}\n\nStreaming live output from the current installer phase.\nLog: ${log_file}"
 
+  local dialog_rc=0
+  set +e
   (
     set +e
+    set -o pipefail
     trap '' SIGPIPE
-
-    "$@" > "$log_file" 2>&1 &
-    local cmd_pid=$!
-    local start_ts elapsed mins secs start_pct end_pct span tick pct rc final_pct
-
-    start_ts=$(date +%s)
-    start_pct=$(( (step_index - 1) * 100 / total_steps ))
-    end_pct=$(( step_index * 100 / total_steps ))
-    span=$(( end_pct - start_pct - 1 ))
-    if (( span < 1 )); then
-      span=1
-    fi
-
-    tick=0
-    while kill -0 "$cmd_pid" 2>/dev/null; do
-      elapsed=$(( $(date +%s) - start_ts ))
-      mins=$(( elapsed / 60 ))
-      secs=$(( elapsed % 60 ))
-      pct=$(( start_pct + 1 + (tick % span) ))
-      if (( pct >= end_pct )); then
-        pct=$(( end_pct - 1 ))
-      fi
-      if (( pct < start_pct )); then
-        pct=$start_pct
-      fi
-
-      echo "XXX"
-      echo "$pct"
-      printf "Step %d of %d\n%s\n\nThis step is still running.\nElapsed: %02d:%02d\nLog: %s\n" "$step_index" "$total_steps" "$step_title" "$mins" "$secs" "$log_file"
-      echo "XXX"
-
-      tick=$(( tick + 1 ))
-      sleep 1
-    done
-
-    wait "$cmd_pid"
-    rc=$?
-    printf '%s' "$rc" > "$rc_file"
-
-    final_pct=$end_pct
-    if (( rc != 0 )); then
-      final_pct=$start_pct
-    fi
-
-    echo "XXX"
-    echo "$final_pct"
-    if (( rc == 0 )); then
-      printf "Step %d of %d\n%s\n\nCompleted successfully.\nLog: %s\n" "$step_index" "$total_steps" "$step_title" "$log_file"
-    else
-      printf "Step %d of %d\n%s\n\nFailed.\nLog: %s\n" "$step_index" "$total_steps" "$step_title" "$log_file"
-    fi
-    echo "XXX"
-    sleep 1
-  ) | whiptail --title "$INSTALLER_UI_TITLE Installer" --gauge "Preparing ${step_title}" 14 78 0
+    "$@" 2>&1 | tee "$log_file"
+    printf '%s' "${PIPESTATUS[0]}" > "$rc_file"
+  ) | dialog --title "$INSTALLER_UI_TITLE Installer" --progressbox "$prompt" 22 100
+  dialog_rc=$?
+  set -e
 
   local rc=1
   if [[ -f "$rc_file" ]]; then
     rc="$(cat "$rc_file")"
+    rc="${rc:-1}"
     rm -f "$rc_file"
+  fi
+
+  if (( dialog_rc != 0 )); then
+    rc="$dialog_rc"
   fi
 
   if (( rc != 0 )); then
