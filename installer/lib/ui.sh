@@ -4,13 +4,12 @@ set -euo pipefail
 INSTALLER_UI_TITLE="Self Hosted Maps"
 
 ensure_ui_backend() {
-  if ! command -v whiptail >/dev/null 2>&1; then
+  local missing=()
+  command -v whiptail >/dev/null 2>&1 || missing+=(whiptail)
+  command -v dialog  >/dev/null 2>&1 || missing+=(dialog)
+  if (( ${#missing[@]} > 0 )); then
     apt-get update
-    apt-get install -y whiptail dialog
-  fi
-  if ! command -v dialog >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y dialog
+    apt-get install -y "${missing[@]}"
   fi
 }
 
@@ -101,8 +100,8 @@ No log output was captured for this step.
 EOF
   fi
 
-  whiptail --title "Install Step Failed" --msgbox "Step failed: ${step_title}\n\nThe step log will be shown next." 12 78
-  whiptail --title "Failure Log" --textbox "$display_file" 28 100
+  whiptail --title "Install Step Failed" --msgbox "Step failed: ${step_title}\n\nThe step log will be shown next." 12 78 || true
+  whiptail --title "Failure Log" --textbox "$display_file" 28 100 || true
 
   if [[ "$display_file" != "$log_file" ]]; then
     rm -f "$display_file"
@@ -121,19 +120,30 @@ run_install_step() {
 
   local rc_file prompt
   rc_file="$(mktemp)"
+  echo "1" > "$rc_file"
   prompt="Step ${step_index} of ${total_steps} — ${step_title}\n\nStreaming live output from the current installer phase.\nLog: ${log_file}"
 
+  local dialog_rc=0
+  set +e
   (
     set +e
     set -o pipefail
+    trap '' SIGPIPE
     "$@" 2>&1 | tee "$log_file"
     printf '%s' "${PIPESTATUS[0]}" > "$rc_file"
   ) | dialog --title "$INSTALLER_UI_TITLE Installer" --progressbox "$prompt" 22 100
+  dialog_rc=$?
+  set -e
 
   local rc=1
   if [[ -f "$rc_file" ]]; then
     rc="$(cat "$rc_file")"
+    rc="${rc:-1}"
     rm -f "$rc_file"
+  fi
+
+  if (( dialog_rc != 0 )); then
+    rc="$dialog_rc"
   fi
 
   if (( rc != 0 )); then
