@@ -123,6 +123,8 @@ run_install_step() {
   echo "1" > "$rc_file"
   prompt="Step ${step_index} of ${total_steps} — ${step_title}\n\nStreaming live output from the current installer phase.\nLog: ${log_file}"
 
+  local dialog_rc=0
+  set +e
   (
     set +e
     set -o pipefail
@@ -130,12 +132,18 @@ run_install_step() {
     "$@" 2>&1 | tee "$log_file"
     printf '%s' "${PIPESTATUS[0]}" > "$rc_file"
   ) | dialog --title "$INSTALLER_UI_TITLE Installer" --progressbox "$prompt" 22 100
+  dialog_rc=$?
+  set -e
 
   local rc=1
   if [[ -f "$rc_file" ]]; then
     rc="$(cat "$rc_file")"
     rc="${rc:-1}"
     rm -f "$rc_file"
+  fi
+
+  if (( dialog_rc != 0 )); then
+    rc="$dialog_rc"
   fi
 
   if (( rc != 0 )); then
