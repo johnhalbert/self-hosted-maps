@@ -6,6 +6,7 @@
 *.css text eol=lf
 *.html text eol=lf
 *.json text eol=lf
+*.geojson text eol=lf
 *.md text eol=lf
 *.mdc text eol=lf
 *.txt text eol=lf

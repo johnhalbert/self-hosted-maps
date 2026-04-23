@@ -10,14 +10,18 @@ const flightProviders = {
     sourceId: "opensky-flights",
     layerId: "opensky-flight-points",
     color: "#f97316",
-    minZoom: 4
+    minZoom: 4,
+    label: "OpenSky",
+    capabilityKey: "openSkyEnabled"
   },
   adsbx: {
     buttonId: "toggleAdsbx",
     sourceId: "adsbx-flights",
     layerId: "adsbx-flight-points",
     color: "#7c3aed",
-    minZoom: 6
+    minZoom: 6,
+    label: "ADS-B Exchange",
+    capabilityKey: "adsbExchangeEnabled"
   }
 };
 
@@ -43,6 +47,9 @@ const appState = {
     opensky: false,
     adsbx: false
   },
+  flightMenuOpen: false,
+  flightMenuPinned: false,
+  flightMenuIgnoreNextFocusOpen: false,
   adminToken: window.localStorage.getItem("shm-admin-token") || "",
   messageTimer: null
 };
@@ -79,7 +86,117 @@ function parseCoordinates(value) {
   return null;
 }
 
-function buildStyle(tilejsonUrl) {
+function isValidBounds(bounds) {
+  return (
+    Array.isArray(bounds) &&
+    bounds.length === 2 &&
+    bounds.every(
+      (corner) =>
+        Array.isArray(corner) &&
+        corner.length === 2 &&
+        corner.every((value) => Number.isFinite(value))
+    ) &&
+    bounds[0][0] < bounds[1][0] &&
+    bounds[0][1] < bounds[1][1]
+  );
+}
+
+function normalizeDatasetBounds(bounds) {
+  if (!Array.isArray(bounds) || bounds.length !== 4) {
+    return null;
+  }
+  const numericBounds = bounds.map(Number);
+  if (numericBounds.some((value) => !Number.isFinite(value))) {
+    return null;
+  }
+  const normalizedBounds = [
+    [numericBounds[0], numericBounds[1]],
+    [numericBounds[2], numericBounds[3]]
+  ];
+  return isValidBounds(normalizedBounds) ? normalizedBounds : null;
+}
+
+function mergeBounds(leftBounds, rightBounds) {
+  if (!leftBounds) {
+    return rightBounds;
+  }
+  if (!rightBounds) {
+    return leftBounds;
+  }
+  return [
+    [
+      Math.min(leftBounds[0][0], rightBounds[0][0]),
+      Math.min(leftBounds[0][1], rightBounds[0][1])
+    ],
+    [
+      Math.max(leftBounds[1][0], rightBounds[1][0]),
+      Math.max(leftBounds[1][1], rightBounds[1][1])
+    ]
+  ];
+}
+
+function boundsToFeatureCollection(bounds) {
+  if (!isValidBounds(bounds)) {
+    return emptyFeatureCollection();
+  }
+  const [[west, south], [east, north]] = bounds;
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [west, south],
+              [west, north],
+              [east, north],
+              [east, south],
+              [west, south]
+            ]
+          ]
+        }
+      }
+    ]
+  };
+}
+
+async function resolveCurrentAreaBounds(initialBounds) {
+  if (isValidBounds(initialBounds)) {
+    return initialBounds;
+  }
+
+  const overview = appState.overview || {};
+  const currentIds = Array.isArray(overview.currentIds) ? overview.currentIds : [];
+  const missingCurrentDatasetIds = Array.isArray(overview.missingCurrentDatasetIds)
+    ? overview.missingCurrentDatasetIds
+    : [];
+  if (!currentIds.length || missingCurrentDatasetIds.length) {
+    return null;
+  }
+
+  try {
+    const data = await requestJson("/api/datasets");
+    const itemsById = new Map((data.items || []).map((item) => [item.id, item]));
+    let mergedBounds = null;
+    for (const datasetId of currentIds) {
+      const item = itemsById.get(datasetId);
+      const datasetBounds = normalizeDatasetBounds(item?.bounds);
+      if (!item || !datasetBounds) {
+        return null;
+      }
+      mergedBounds = mergeBounds(mergedBounds, datasetBounds);
+    }
+    return mergedBounds;
+  } catch (error) {
+    console.warn("Unable to resolve current area bounds.", error);
+    return null;
+  }
+}
+
+function buildStyle(tilejsonUrl, currentAreaData) {
   return {
     version: 8,
     glyphs: "/fonts/{fontstack}/{range}.pbf",
@@ -87,6 +204,10 @@ function buildStyle(tilejsonUrl) {
       worldLand: {
         type: "geojson",
         data: "/world-land.geojson"
+      },
+      currentArea: {
+        type: "geojson",
+        data: currentAreaData
       },
       osm: {
         type: "vector",
@@ -97,7 +218,7 @@ function buildStyle(tilejsonUrl) {
       {
         id: "global-ocean",
         type: "background",
-        paint: { "background-color": "#dceeff" }
+        paint: { "background-color": "#c7def2" }
       },
       {
         id: "global-land",
@@ -105,6 +226,15 @@ function buildStyle(tilejsonUrl) {
         source: "worldLand",
         paint: {
           "fill-color": "#c7ccd3",
+          "fill-opacity": 1
+        }
+      },
+      {
+        id: "current-area-fill",
+        type: "fill",
+        source: "currentArea",
+        paint: {
+          "fill-color": "#f4efe3",
           "fill-opacity": 1
         }
       },
@@ -388,22 +518,89 @@ function setFlightData(providerKey, featureCollection) {
   }
 }
 
-function updateFlightButtons() {
-  const caps = appState.capabilities;
-  const buttons = {
-    opensky: document.getElementById(flightProviders.opensky.buttonId),
-    adsbx: document.getElementById(flightProviders.adsbx.buttonId)
+function flightMenuElements() {
+  return {
+    controls: document.getElementById("flightControls"),
+    toggle: document.getElementById("flightMenuToggle"),
+    panel: document.getElementById("flightMenuPanel"),
+    buttons: {
+      opensky: document.getElementById(flightProviders.opensky.buttonId),
+      adsbx: document.getElementById(flightProviders.adsbx.buttonId)
+    }
   };
-  if (buttons.opensky) {
-    buttons.opensky.disabled = !caps.openSkyEnabled;
-    buttons.opensky.classList.toggle("active", appState.flightsEnabled.opensky);
-    buttons.opensky.textContent = caps.openSkyEnabled ? "OpenSky" : "OpenSky (Unavailable)";
+}
+
+function isFlightProviderAvailable(providerKey) {
+  return Boolean(appState.capabilities[flightProviders[providerKey].capabilityKey]);
+}
+
+function syncFlightMenuState() {
+  const { controls, toggle, panel, buttons } = flightMenuElements();
+  if (!controls || !toggle || !panel) {
+    return;
   }
-  if (buttons.adsbx) {
-    buttons.adsbx.disabled = !caps.adsbExchangeEnabled;
-    buttons.adsbx.classList.toggle("active", appState.flightsEnabled.adsbx);
-    buttons.adsbx.textContent = caps.adsbExchangeEnabled ? "ADS-B Exchange" : "ADS-B Exchange (Unavailable)";
+
+  controls.dataset.open = appState.flightMenuOpen ? "true" : "false";
+  controls.dataset.pinned = appState.flightMenuPinned ? "true" : "false";
+  toggle.setAttribute("aria-expanded", appState.flightMenuOpen ? "true" : "false");
+  panel.setAttribute("aria-hidden", appState.flightMenuOpen ? "false" : "true");
+  if ("inert" in panel) {
+    panel.inert = !appState.flightMenuOpen;
   }
+  Object.values(buttons).forEach((button) => {
+    if (!button) {
+      return;
+    }
+    button.tabIndex = appState.flightMenuOpen && !button.disabled ? 0 : -1;
+  });
+}
+
+function setFlightMenuState(open, options = {}) {
+  appState.flightMenuOpen = open;
+  appState.flightMenuPinned = open ? Boolean(options.pinned) : false;
+  syncFlightMenuState();
+  if (options.focusToggle) {
+    flightMenuElements().toggle?.focus();
+  }
+}
+
+function openFlightMenu(options = {}) {
+  setFlightMenuState(true, { pinned: options.pinned ?? appState.flightMenuPinned });
+}
+
+function closeFlightMenu(options = {}) {
+  if (options.suppressNextFocusOpen) {
+    appState.flightMenuIgnoreNextFocusOpen = true;
+  }
+  setFlightMenuState(false, { focusToggle: options.focusToggle === true });
+}
+
+function updateFlightButtons() {
+  const { toggle, buttons } = flightMenuElements();
+  Object.entries(flightProviders).forEach(([providerKey, provider]) => {
+    const button = buttons[providerKey];
+    if (!button) {
+      return;
+    }
+
+    const available = isFlightProviderAvailable(providerKey);
+    const active = appState.flightsEnabled[providerKey];
+    button.disabled = !available;
+    button.classList.toggle("active", available && active);
+    button.classList.toggle("unavailable", !available);
+    button.setAttribute("aria-pressed", available && active ? "true" : "false");
+    button.textContent = available ? provider.label : `${provider.label} (Unavailable)`;
+  });
+
+  if (toggle) {
+    const anyActive = Object.keys(flightProviders).some((providerKey) => appState.flightsEnabled[providerKey]);
+    const anyAvailable = Object.keys(flightProviders).some((providerKey) =>
+      isFlightProviderAvailable(providerKey)
+    );
+    toggle.dataset.state = anyActive ? "active" : anyAvailable ? "idle" : "unavailable";
+  }
+
+  syncFlightMenuState();
 }
 
 function currentBoundsQuery() {
@@ -482,7 +679,7 @@ function stopFlightPolling(providerKey) {
 }
 
 function toggleFlight(providerKey) {
-  if (!appState.capabilities[providerKey === "opensky" ? "openSkyEnabled" : "adsbExchangeEnabled"]) {
+  if (!isFlightProviderAvailable(providerKey)) {
     return;
   }
 
@@ -761,6 +958,10 @@ function closeModal() {
 }
 
 function bindDomEvents() {
+  const flightControls = document.getElementById("flightControls");
+  const flightMenuToggle = document.getElementById("flightMenuToggle");
+  const targetInFlightControls = (target) => Boolean(target && flightControls.contains(target));
+
   document.getElementById("goBtn").addEventListener("click", () => {
     runSearch();
   });
@@ -793,6 +994,44 @@ function bindDomEvents() {
       });
     }
   });
+  flightControls.addEventListener("pointerenter", () => {
+    openFlightMenu();
+  });
+  flightControls.addEventListener("pointerleave", () => {
+    if (!appState.flightMenuPinned && !targetInFlightControls(document.activeElement)) {
+      closeFlightMenu();
+    }
+  });
+  flightControls.addEventListener("focusin", () => {
+    if (appState.flightMenuIgnoreNextFocusOpen) {
+      appState.flightMenuIgnoreNextFocusOpen = false;
+      return;
+    }
+    openFlightMenu({ pinned: appState.flightMenuPinned });
+  });
+  flightControls.addEventListener("focusout", (event) => {
+    if (targetInFlightControls(event.relatedTarget)) {
+      return;
+    }
+    window.setTimeout(() => {
+      if (!appState.flightMenuPinned && !targetInFlightControls(document.activeElement)) {
+        closeFlightMenu();
+      }
+    }, 0);
+  });
+  flightControls.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeFlightMenu({ focusToggle: true, suppressNextFocusOpen: true });
+    }
+  });
+  flightMenuToggle.addEventListener("click", () => {
+    if (appState.flightMenuOpen && appState.flightMenuPinned) {
+      closeFlightMenu();
+      return;
+    }
+    openFlightMenu({ pinned: true });
+  });
   document.getElementById("toggleOpenSky").addEventListener("click", () => toggleFlight("opensky"));
   document.getElementById("toggleAdsbx").addEventListener("click", () => toggleFlight("adsbx"));
   document.getElementById("catalogResults").addEventListener("click", (event) => {
@@ -809,22 +1048,29 @@ function bindDomEvents() {
       closeModal();
     }
   });
+  document.addEventListener("pointerdown", (event) => {
+    if (!targetInFlightControls(event.target)) {
+      closeFlightMenu();
+    }
+  });
+  syncFlightMenuState();
 }
 
 async function initMap() {
   const tilejsonUrl = appState.overview?.tilejsonUrl || "/data/openmaptiles.json";
   const initialView = await loadTileJsonView(tilejsonUrl);
+  const currentAreaBounds = await resolveCurrentAreaBounds(initialView.bounds);
   appState.map = new maplibregl.Map({
     container: "map",
-    style: buildStyle(tilejsonUrl),
+    style: buildStyle(tilejsonUrl, boundsToFeatureCollection(currentAreaBounds)),
     center: initialView.center,
     zoom: initialView.zoom
   });
   appState.map.addControl(new maplibregl.NavigationControl(), "top-right");
   appState.map.on("load", () => {
     ensureFlightLayers();
-    if (initialView.bounds) {
-      appState.map.fitBounds(initialView.bounds, {
+    if (currentAreaBounds) {
+      appState.map.fitBounds(currentAreaBounds, {
         padding: 40,
         animate: false
       });

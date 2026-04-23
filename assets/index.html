@@ -20,9 +20,30 @@
     <div id="message" class="message"></div>
   </div>
 
-  <div id="flightControls" class="flight-controls">
-    <button id="toggleOpenSky" class="flight-button" type="button">OpenSky</button>
-    <button id="toggleAdsbx" class="flight-button" type="button">ADS-B Exchange</button>
+  <div id="flightControls" class="flight-controls" data-open="false" data-pinned="false">
+    <button
+      id="flightMenuToggle"
+      class="flight-menu-toggle"
+      type="button"
+      aria-label="Air traffic layers"
+      aria-expanded="false"
+      aria-controls="flightMenuPanel"
+      aria-haspopup="true"
+      title="Air traffic layers"
+    >
+      <span class="flight-menu-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path
+            fill="currentColor"
+            d="M21.44 10.05L13.5 12.18V8.1l3.2-2.28V4.2l-4.7 1.6L9.3 4.2v1.62L12.5 8.1v4.08l-7.94-2.13L3 11.61l9.5 5.16v3.12L10.3 21v1.2l1.7-.42L13.7 22v-1.2l-1.2-1.11v-3.12L22 11.61z"
+          />
+        </svg>
+      </span>
+    </button>
+    <div id="flightMenuPanel" class="flight-menu-panel" aria-hidden="true">
+      <button id="toggleOpenSky" class="flight-button" type="button" tabindex="-1">OpenSky</button>
+      <button id="toggleAdsbx" class="flight-button" type="button" tabindex="-1">ADS-B Exchange</button>
+    </div>
   </div>
 
   <div id="map"></div>
