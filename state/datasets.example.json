@@ -1,14 +1,17 @@
 {
   "catalog": {
-    "provider": "geofabrik",
+    "provider": "multi",
+    "providers": [],
     "fetched_at": null,
-    "cache_path": null
+    "cache_path": null,
+    "sources": {}
   },
   "installed": {},
   "selected": [],
   "current": {
     "selected_hash": null,
     "artifact_path": null,
-    "rebuilt_at": null
+    "rebuilt_at": null,
+    "dataset_ids": []
   }
 }

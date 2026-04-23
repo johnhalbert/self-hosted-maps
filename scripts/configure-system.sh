@@ -8,6 +8,10 @@ install -m 0644 "${SHM_REPO_ROOT}/systemd/self-hosted-maps-tileserver.service" /
 sed -i "s|__CONFIG_ROOT__|${SHM_CONFIG_ROOT}|g" /etc/systemd/system/self-hosted-maps-tileserver.service
 sed -i "s|__DATA_ROOT__|${SHM_DATA_ROOT}|g" /etc/systemd/system/self-hosted-maps-tileserver.service
 
+install -m 0644 "${SHM_REPO_ROOT}/systemd/self-hosted-maps-api.service" /etc/systemd/system/self-hosted-maps-api.service
+sed -i "s|__CONFIG_ROOT__|${SHM_CONFIG_ROOT}|g" /etc/systemd/system/self-hosted-maps-api.service
+sed -i "s|__INSTALL_ROOT__|${SHM_INSTALL_ROOT}|g" /etc/systemd/system/self-hosted-maps-api.service
+
 FONTS_ROOT="$(npm root -g 2>/dev/null)/tileserver-gl-light/node_modules/tileserver-gl-styles/fonts"
 ALT_FONTS_ROOT="/usr/local/lib/node_modules/tileserver-gl-light/node_modules/tileserver-gl-styles/fonts"
 
@@ -31,5 +35,7 @@ rm -f /etc/nginx/sites-enabled/default
 
 systemctl daemon-reload
 systemctl enable self-hosted-maps-tileserver.service
+systemctl enable self-hosted-maps-api.service
 systemctl enable nginx
+systemctl restart self-hosted-maps-api.service
 systemctl restart nginx

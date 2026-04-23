@@ -1,0 +1,21 @@
+[Unit]
+Description=Self Hosted Maps API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=__CONFIG_ROOT__/self-hosted-maps.conf
+EnvironmentFile=-__CONFIG_ROOT__/self-hosted-maps.runtime.conf
+WorkingDirectory=__INSTALL_ROOT__
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/python3 __INSTALL_ROOT__/bin/web-api.py --host 127.0.0.1 --port 8090
+Restart=always
+RestartSec=5
+User=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -6,6 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shm_common.sh"
 
 require_cmd jq
 ensure_state_file
+acquire_mutation_lock
 
 SELECTED_JSON="$(json_compact_array_from_args "$@")"
 STATE_TMP="$(mktemp)"

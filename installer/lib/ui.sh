@@ -50,7 +50,7 @@ choose_region_url() {
 
 choose_update_schedule() {
   local choice
-  choice=$(whiptail --title "Update Schedule" --menu "Choose how often to rebuild tiles:" 18 80 8 \
+  choice=$(whiptail --title "Update Schedule" --menu "Choose how often to refresh map data:" 18 80 8 \
     daily "Every day at 03:00" \
     weekly "Every Sunday at 03:00" \
     monthly "First day of month at 03:00" \
@@ -59,7 +59,7 @@ choose_update_schedule() {
     daily) echo "0 3 * * *" ;;
     weekly) echo "0 3 * * 0" ;;
     monthly) echo "0 3 1 * *" ;;
-    custom) whiptail --title "Custom Cron" --inputbox "Enter a cron expression for the rebuild job:" 10 80 "0 3 * * 0" 3>&1 1>&2 2>&3 ;;
+    custom) whiptail --title "Custom Cron" --inputbox "Enter a cron expression for the maintenance job:" 10 80 "0 3 * * 0" 3>&1 1>&2 2>&3 ;;
   esac
 }
 

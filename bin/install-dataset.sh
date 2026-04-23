@@ -7,6 +7,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_shm_common.sh"
 require_cmd curl
 require_cmd jq
 ensure_state_file
+acquire_mutation_lock
 
 if [[ "$#" -lt 1 ]]; then
   echo "usage: install-dataset.sh <dataset-id> [--select] [--rebuild]" >&2

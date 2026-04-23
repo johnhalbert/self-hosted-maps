@@ -83,7 +83,7 @@ run_install_step 3 "$step_total" "Build and install Tilemaker" "$log_root/instal
 run_install_step 4 "$step_total" "Install runtime scripts and assets" "$log_root/install/04-install-runtime.log" bash "$REPO_ROOT/scripts/install-runtime.sh"
 run_install_step 5 "$step_total" "Configure services and web server" "$log_root/install/05-configure-system.log" bash "$REPO_ROOT/scripts/configure-system.sh"
 run_install_step 6 "$step_total" "Download bootstrap dataset and build initial map" "$log_root/install/06-bootstrap-selection.log" bash "$REPO_ROOT/scripts/bootstrap-selection.sh"
-run_install_step 7 "$step_total" "Register scheduled rebuild job" "$log_root/install/07-register-cron.log" bash "$REPO_ROOT/scripts/register-cron.sh"
+run_install_step 7 "$step_total" "Register scheduled update job" "$log_root/install/07-register-cron.log" bash "$REPO_ROOT/scripts/register-cron.sh"
 run_install_step 8 "$step_total" "Install post-install shortcuts and usage hints" "$log_root/install/08-post-install-discoverability.log" bash "$REPO_ROOT/scripts/post-install-discoverability.sh"
 
 viewer_ip="$(hostname -I | awk '{print $1}')"

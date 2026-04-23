@@ -1,289 +1,80 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Self Hosted Maps</title>
   <link href="/vendor/maplibre-gl.css" rel="stylesheet" />
-  <style>
-    html, body, #map { margin:0; padding:0; width:100%; height:100%; }
-    .banner {
-      position: absolute;
-      z-index: 10;
-      top: 10px;
-      left: 10px;
-      background: rgba(0,0,0,0.75);
-      color: #fff;
-      padding: 8px 10px;
-      border-radius: 6px;
-      font-family: sans-serif;
-    }
-    .search-box { position: absolute; z-index: 10; top: 10px; right: 10px; display: flex; gap: 8px; background: rgba(255,255,255,0.96); padding: 8px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); font-family: sans-serif; } .search-box input { width: 300px; padding: 6px 8px; } .search-box button { padding: 6px 10px; cursor: pointer; } .message { position: absolute; z-index: 10; top: 58px; right: 10px; background: rgba(0,0,0,0.8); color: #fff; padding: 8px 10px; border-radius: 6px; font-family: sans-serif; max-width: 340px; display: none; }
-  </style>
+  <link href="/styles.css" rel="stylesheet" />
 </head>
 <body>
-  <div class="banner">Self Hosted Maps</div>
-  <div class="search-box"> <input id="coordSearch" type="text" placeholder="lat,lng or lng,lat" /> <button id="goBtn" type="button">Go</button> </div> <div id="message" class="message"></div>
+  <div class="overlay-stack">
+    <div class="banner-row">
+      <div class="banner">Self Hosted Maps</div>
+      <button id="configBtn" class="config-button" type="button">Maps</button>
+    </div>
+    <div class="search-box">
+      <input id="searchInput" type="text" placeholder="address or lat,lng" />
+      <button id="goBtn" type="button">Go</button>
+    </div>
+    <div id="message" class="message"></div>
+  </div>
+
+  <div id="flightControls" class="flight-controls">
+    <button id="toggleOpenSky" class="flight-button" type="button">OpenSky</button>
+    <button id="toggleAdsbx" class="flight-button" type="button">ADS-B Exchange</button>
+  </div>
+
   <div id="map"></div>
+
+  <div id="configModal" class="modal" aria-modal="true" role="dialog" aria-labelledby="configTitle">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="configTitle">Map Configuration</h2>
+        <button id="closeConfigBtn" class="secondary" type="button">Close</button>
+      </div>
+
+      <div class="modal-grid">
+        <section class="modal-section">
+          <h3>Current Map</h3>
+          <div id="mapSummary" class="summary-list"></div>
+        </section>
+
+        <section class="modal-section">
+          <h3>Downloaded Maps</h3>
+          <div id="downloadedMaps" class="dataset-list"></div>
+        </section>
+
+        <section class="modal-section">
+          <h3>Active Map Selection</h3>
+          <div id="selectionList" class="selection-list"></div>
+          <div class="toolbar-row">
+            <button id="applySelectionBtn" type="button">Apply Selection</button>
+          </div>
+        </section>
+
+        <section class="modal-section">
+          <h3>Download New Maps</h3>
+          <div class="toolbar-row">
+            <input id="catalogSearchInput" type="text" placeholder="Search by name, id, provider, or parent" />
+            <button id="catalogSearchBtn" type="button">Search</button>
+            <button id="refreshCatalogBtn" class="secondary" type="button">Refresh Catalog</button>
+          </div>
+          <div id="catalogResults" class="catalog-results"></div>
+        </section>
+
+        <section class="modal-section">
+          <h3>Admin Job Status</h3>
+          <div id="jobStatus" class="job-status">No active admin job.</div>
+          <div id="jobLog" class="job-log">
+            <pre id="jobLogBody"></pre>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <script src="/vendor/maplibre-gl.js"></script>
-  <script>
-    const fallbackView = {
-      center: [-91.56, 31.63],
-      zoom: 10,
-      bounds: null
-    };
-
-    const style = {
-      version: 8,
-      glyphs: '/fonts/{fontstack}/{range}.pbf',
-      sources: {
-        osm: {
-          type: 'vector',
-          url: '/data/openmaptiles.json'
-        }
-      },
-      layers: [
-        {
-          id: 'background',
-          type: 'background',
-          paint: { 'background-color': '#eef4ea' }
-        },
-        {
-          id: 'landcover',
-          type: 'fill',
-          source: 'osm',
-          'source-layer': 'landcover',
-          paint: { 'fill-color': '#d8e8c8' }
-        },
-        {
-          id: 'landuse',
-          type: 'fill',
-          source: 'osm',
-          'source-layer': 'landuse',
-          paint: {
-            'fill-color': '#dfe8c8',
-            'fill-opacity': 0.55
-          }
-        },
-        {
-          id: 'park',
-          type: 'fill',
-          source: 'osm',
-          'source-layer': 'park',
-          paint: {
-            'fill-color': '#cfe6b8',
-            'fill-opacity': 0.85
-          }
-        },
-        {
-          id: 'water',
-          type: 'fill',
-          source: 'osm',
-          'source-layer': 'water',
-          paint: { 'fill-color': '#9cc7ff' }
-        },
-        {
-          id: 'boundary',
-          type: 'line',
-          source: 'osm',
-          'source-layer': 'boundary',
-          paint: {
-            'line-color': '#6b7280',
-            'line-width': 2
-          }
-        },
-        {
-          id: 'waterway',
-          type: 'line',
-          source: 'osm',
-          'source-layer': 'waterway',
-          paint: {
-            'line-color': '#76a7ff',
-            'line-width': 1.2
-          }
-        },
-        {
-          id: 'transportation',
-          type: 'line',
-          source: 'osm',
-          'source-layer': 'transportation',
-          paint: {
-            'line-color': '#666',
-            'line-width': [
-              'interpolate',
-              ['linear'],
-              ['zoom'],
-              6, 0.5,
-              10, 1.2,
-              14, 2.2
-            ]
-          }
-        },
-        {
-          id: 'building',
-          type: 'fill',
-          source: 'osm',
-          'source-layer': 'building',
-          minzoom: 13,
-          paint: {
-            'fill-color': '#d7c7b5',
-            'fill-outline-color': '#b79f8b'
-          }
-        },
-        {
-          id: 'water-label',
-          type: 'symbol',
-          source: 'osm',
-          'source-layer': 'water_name',
-          layout: {
-            'text-field': ['coalesce', ['get', 'name:latin'], ['get', 'class']],
-            'text-font': ['Noto Sans Regular'],
-            'text-size': 12
-          },
-          paint: {
-            'text-color': '#2b6cb0'
-          }
-        },
-        {
-          id: 'road-label',
-          type: 'symbol',
-          source: 'osm',
-          'source-layer': 'transportation_name',
-          minzoom: 10,
-          layout: {
-            'symbol-placement': 'line',
-            'text-field': ['coalesce', ['get', 'name:latin'], ['get', 'ref'], ['get', 'class']],
-            'text-font': ['Noto Sans Regular'],
-            'text-size': 11
-          },
-          paint: {
-            'text-color': '#444'
-          }
-        },
-        {
-          id: 'place-label',
-          type: 'symbol',
-          source: 'osm',
-          'source-layer': 'place',
-          layout: {
-            'text-field': ['coalesce', ['get', 'name:latin'], ['get', 'class']],
-            'text-font': ['Noto Sans Regular'],
-            'text-size': [
-              'interpolate',
-              ['linear'],
-              ['zoom'],
-              4, 11,
-              8, 13,
-              12, 16
-            ]
-          },
-          paint: {
-            'text-color': '#222'
-          }
-        }
-      ]
-    };
-
-    async function loadInitialView() {
-      try {
-        const response = await fetch('/data/openmaptiles.json');
-        if (!response.ok) {
-          throw new Error(`TileJSON request failed with ${response.status}`);
-        }
-        const tilejson = await response.json();
-        const nextView = { ...fallbackView };
-
-        if (Array.isArray(tilejson.center) && tilejson.center.length >= 2) {
-          nextView.center = [Number(tilejson.center[0]), Number(tilejson.center[1])];
-          if (tilejson.center.length >= 3 && Number.isFinite(Number(tilejson.center[2]))) {
-            nextView.zoom = Number(tilejson.center[2]);
-          }
-        }
-
-        if (Array.isArray(tilejson.bounds) && tilejson.bounds.length === 4) {
-          const bounds = tilejson.bounds.map(Number);
-          if (bounds.every(Number.isFinite)) {
-            nextView.bounds = [
-              [bounds[0], bounds[1]],
-              [bounds[2], bounds[3]]
-            ];
-          }
-        }
-
-        return nextView;
-      } catch (error) {
-        console.warn('Falling back to default map view.', error);
-        return fallbackView;
-      }
-    }
-
-    async function initMap() {
-      const initialView = await loadInitialView();
-      const map = new maplibregl.Map({
-        container: 'map',
-        style,
-        center: initialView.center,
-        zoom: initialView.zoom
-      });
-
-      map.addControl(new maplibregl.NavigationControl());
-
-      if (initialView.bounds) {
-        map.once('load', () => {
-          map.fitBounds(initialView.bounds, {
-            padding: 40,
-            animate: false
-          });
-        });
-      }
-
-      const input = document.getElementById('coordSearch');
-      const button = document.getElementById('goBtn');
-      const message = document.getElementById('message');
-
-      function showMessage(text) {
-        message.textContent = text;
-        message.style.display = 'block';
-        setTimeout(() => {
-          message.style.display = 'none';
-        }, 4000);
-      }
-
-      function parseCoordinates(value) {
-        const parts = value.split(',').map(v => parseFloat(v.trim()));
-        if (parts.length !== 2 || parts.some(Number.isNaN)) {
-          return null;
-        }
-        const [a, b] = parts;
-        if (Math.abs(a) <= 90 && Math.abs(b) <= 180) {
-          return { lat: a, lng: b };
-        }
-        if (Math.abs(a) <= 180 && Math.abs(b) <= 90) {
-          return { lat: b, lng: a };
-        }
-        return null;
-      }
-
-      function runSearch() {
-        const value = input.value.trim();
-        if (!value) return;
-        const coords = parseCoordinates(value);
-        if (!coords) {
-          showMessage('Only coordinate search is implemented right now.');
-          return;
-        }
-        map.flyTo({ center: [coords.lng, coords.lat], zoom: 13 });
-      }
-
-      button.addEventListener('click', runSearch);
-      input.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-          runSearch();
-        }
-      });
-    }
-
-    initMap();
-  </script>
+  <script src="/app.js"></script>
 </body>
 </html>

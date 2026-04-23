@@ -41,7 +41,32 @@ SHM_PBF_URL="${SHM_PBF_URL}"
 SHM_UPDATE_SCHEDULE="${SHM_UPDATE_SCHEDULE}"
 SHM_INSTALL_USER="${SHM_INSTALL_USER}"
 SHM_TIMEZONE="${SHM_TIMEZONE}"
+SHM_RUNTIME_CONFIG_FILE="${cfg_dir}/self-hosted-maps.runtime.conf"
 CFG
+}
+
+write_runtime_env_file_if_missing() {
+  local cfg_dir="$1"
+  local runtime_file="$cfg_dir/self-hosted-maps.runtime.conf"
+  if [[ -f "$runtime_file" ]]; then
+    return 0
+  fi
+  cat > "$runtime_file" <<'CFG'
+# Optional runtime settings for the web viewer and local API.
+# Leave SHM_ADMIN_TOKEN blank to allow local admin actions without a token.
+SHM_ADDRESS_SEARCH_ENABLED="1"
+SHM_GEOCODER_URL="https://nominatim.openstreetmap.org/search"
+SHM_GEOCODER_USER_AGENT="self-hosted-maps/1.0"
+SHM_OPENSKY_ENABLED="1"
+SHM_OPENSKY_API_BASE_URL="https://opensky-network.org/api"
+SHM_OPENSKY_CLIENT_ID=""
+SHM_OPENSKY_CLIENT_SECRET=""
+SHM_ADSBEXCHANGE_ENABLED="0"
+SHM_ADSBEXCHANGE_API_BASE_URL="https://adsbexchange.com/api"
+SHM_ADSBEXCHANGE_API_KEY=""
+SHM_ADMIN_TOKEN=""
+CFG
+  chmod 0600 "$runtime_file"
 }
 
 safe_mkdirs() {

@@ -22,6 +22,11 @@ Current served tileset:
 Viewer:
   http://<server-ip>/
 
+Viewer features:
+- top-left coordinate or address search
+- a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
+- right-side flight overlay toggles for OpenSky and ADS-B Exchange when configured
+
 Manager capabilities:
 - browse the live catalog
 - install additional datasets over time
@@ -37,3 +42,4 @@ Notes:
 - The manager shows a one-time first-run hint when the system has only the bootstrap dataset installed.
 - Rebuilding the served map is explicit; installing or selecting datasets does not automatically rebuild.
 - `current.dataset_ids` in the state file tracks the dataset ids that were actually part of the last successful rebuild.
+- The scheduled maintenance job refreshes the datasets that back the current served map instead of rebuilding from the legacy single bootstrap URL.

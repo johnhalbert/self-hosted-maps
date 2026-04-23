@@ -9,6 +9,7 @@ require_cmd jq
 require_cmd grep
 require_cmd sed
 ensure_state_file
+acquire_mutation_lock
 
 GEOFABRIK_URL="https://download.geofabrik.de/index-v1-nogeom.json"
 BBBIKE_INDEX_URL="https://download.bbbike.org/osm/bbbike/"

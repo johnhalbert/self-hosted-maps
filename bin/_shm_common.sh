@@ -12,6 +12,12 @@ fi
 : "${SHM_DATA_ROOT:=/var/lib/self-hosted-maps}"
 : "${SHM_CONFIG_ROOT:=/etc/self-hosted-maps}"
 : "${SHM_LOG_ROOT:=/var/log/self-hosted-maps}"
+: "${SHM_RUNTIME_CONFIG_FILE:=${SHM_CONFIG_ROOT}/self-hosted-maps.runtime.conf}"
+
+if [[ -f "$SHM_RUNTIME_CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$SHM_RUNTIME_CONFIG_FILE"
+fi
 
 SHM_COMMON_SOURCE="${BASH_SOURCE[0]}"
 if command -v readlink >/dev/null 2>&1; then
@@ -26,6 +32,8 @@ SHM_BBBIKE_INDEX_HTML="${SHM_BBBIKE_INDEX_HTML:-${SHM_CATALOG_DIR}/bbbike-index.
 SHM_NORMALIZED_CATALOG="${SHM_NORMALIZED_CATALOG:-${SHM_CATALOG_DIR}/catalog.json}"
 SHM_DATASETS_DIR="${SHM_DATASETS_DIR:-${SHM_DATA_ROOT}/datasets}"
 SHM_SELECTED_BUILD_DIR="${SHM_SELECTED_BUILD_DIR:-${SHM_DATA_ROOT}/builds/selected}"
+SHM_LOCK_DIR="${SHM_LOCK_DIR:-${SHM_DATA_ROOT}/locks}"
+SHM_MUTATION_LOCK_FILE="${SHM_MUTATION_LOCK_FILE:-${SHM_LOCK_DIR}/mutation.lock}"
 
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
@@ -39,7 +47,7 @@ require_cmd() {
 }
 
 ensure_state_file() {
-  mkdir -p "$SHM_CONFIG_ROOT" "$SHM_CATALOG_DIR" "$SHM_DATASETS_DIR" "$SHM_SELECTED_BUILD_DIR" "$SHM_LOG_ROOT"
+  mkdir -p "$SHM_CONFIG_ROOT" "$SHM_CATALOG_DIR" "$SHM_DATASETS_DIR" "$SHM_SELECTED_BUILD_DIR" "$SHM_LOG_ROOT" "$SHM_LOCK_DIR"
   if [[ ! -f "$SHM_STATE_FILE" ]]; then
     cat > "$SHM_STATE_FILE" <<'JSON'
 {
@@ -60,6 +68,20 @@ ensure_state_file() {
 }
 JSON
   fi
+}
+
+acquire_mutation_lock() {
+  if [[ "${SHM_MUTATION_LOCK_HELD:-0}" == "1" ]]; then
+    return 0
+  fi
+  command -v flock >/dev/null 2>&1 || {
+    echo "Missing required command: flock" >&2
+    exit 1
+  }
+  mkdir -p "$SHM_LOCK_DIR"
+  exec 9>"$SHM_MUTATION_LOCK_FILE"
+  flock 9
+  export SHM_MUTATION_LOCK_HELD=1
 }
 
 dataset_dir_for_id() {
