@@ -71,6 +71,17 @@ function showMessage(text, tone = "info") {
   }, 5000);
 }
 
+function renderViewerNotice(hasInitialBounds) {
+  const notice = document.getElementById("viewerNotice");
+  if (!notice) {
+    return;
+  }
+  notice.textContent = hasInitialBounds
+    ? "Initial map extent uses stored data bounds. Exact region boundaries are not shown in this view."
+    : "Exact region boundaries are not shown in this view.";
+  notice.hidden = false;
+}
+
 function parseCoordinates(value) {
   const parts = value.split(",").map((part) => Number.parseFloat(part.trim()));
   if (parts.length !== 2 || parts.some((part) => Number.isNaN(part))) {
@@ -1060,9 +1071,10 @@ async function initMap() {
   const tilejsonUrl = appState.overview?.tilejsonUrl || "/data/openmaptiles.json";
   const initialView = await loadTileJsonView(tilejsonUrl);
   const currentAreaBounds = await resolveCurrentAreaBounds(initialView.bounds);
+  renderViewerNotice(Boolean(currentAreaBounds));
   appState.map = new maplibregl.Map({
     container: "map",
-    style: buildStyle(tilejsonUrl, boundsToFeatureCollection(currentAreaBounds)),
+    style: buildStyle(tilejsonUrl, emptyFeatureCollection()),
     center: initialView.center,
     zoom: initialView.zoom
   });
