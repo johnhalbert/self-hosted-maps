@@ -48,6 +48,8 @@ dataset_dir="$(jq -r --arg id "$DATASET_ID" '.installed[$id].dataset_dir // empt
 pbf_path="$(jq -r --arg id "$DATASET_ID" '.installed[$id].pbf_path // empty' "$SHM_STATE_FILE")"
 old_bounds="$(jq -c --arg id "$DATASET_ID" '.installed[$id].bounds // []' "$SHM_STATE_FILE")"
 old_installed_at="$(jq -r --arg id "$DATASET_ID" '.installed[$id].installed_at // ""' "$SHM_STATE_FILE")"
+old_source_id="$(jq -r --arg id "$DATASET_ID" '.installed[$id].source_id // ""' "$SHM_STATE_FILE")"
+old_boundary="$(jq -c --arg id "$DATASET_ID" '.installed[$id].boundary // null' "$SHM_STATE_FILE")"
 old_size=0
 if [[ -n "$pbf_path" && -f "$pbf_path" ]]; then
   old_size="$(stat -c %s "$pbf_path")"
@@ -62,13 +64,25 @@ new_bounds="$old_bounds"
 new_parent="$(jq -r --arg id "$DATASET_ID" '.installed[$id].parent // ""' "$SHM_STATE_FILE")"
 new_provider="$provider"
 new_name="$name"
+new_source_id="$old_source_id"
+new_boundary="$old_boundary"
+catalog_fetched_at="$(jq -r '.catalog.fetched_at // ""' "$SHM_STATE_FILE")"
 
-if dataset_json="$(bash "$SHM_BIN_DIR/find-dataset.sh" "$DATASET_ID" 2>/dev/null)"; then
+if dataset_json="$(bash "$SHM_BIN_DIR/find-dataset.sh" --installed "$DATASET_ID" 2>/dev/null)"; then
   new_url="$(jq -r '.download_url // empty' <<<"$dataset_json")"
   new_bounds="$(jq -c '.bounds // []' <<<"$dataset_json")"
   new_parent="$(jq -r '.parent // ""' <<<"$dataset_json")"
   new_provider="$(jq -r '.provider // "unknown"' <<<"$dataset_json")"
   new_name="$(jq -r '.name // empty' <<<"$dataset_json")"
+  new_source_id="$(jq -r '.source_id // ""' <<<"$dataset_json")"
+  boundary_available="$(jq -r 'if (.boundary_available // false) then "true" else "false" end' <<<"$dataset_json")"
+  boundary_reason=""
+  if [[ "$boundary_available" != "true" ]]; then
+    boundary_reason="$(default_boundary_reason_for_provider "$new_provider")"
+  fi
+  new_boundary="$(build_boundary_metadata_json "$boundary_available" "catalog" "$catalog_fetched_at" "$boundary_reason")"
+elif [[ -z "$new_boundary" || "$new_boundary" == "null" ]]; then
+  new_boundary="$(build_boundary_metadata_json false "none" "$catalog_fetched_at" "$(default_boundary_reason_for_provider "$provider")")"
 fi
 
 mkdir -p "$dataset_dir"
@@ -92,7 +106,9 @@ META_JSON="$(jq -n \
   --arg pbf "$pbf_path" \
   --arg dir "$dataset_dir" \
   --arg installed_at "$updated_at" \
+  --arg source_id "$new_source_id" \
   --argjson bounds "$new_bounds" \
+  --argjson boundary "$new_boundary" \
   --argjson update_history "$existing_history" \
   '{
     id: $id,
@@ -104,6 +120,8 @@ META_JSON="$(jq -n \
     dataset_dir: $dir,
     installed_at: $installed_at,
     bounds: $bounds,
+    source_id: $source_id,
+    boundary: $boundary,
     update_history: $update_history
   }')"
 

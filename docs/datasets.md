@@ -26,6 +26,8 @@ Installing a dataset does not automatically make it part of the served map unles
 
 This distinction matters because the selected set may change after a rebuild. The served artifact reflects `current.dataset_ids`, not merely the current `selected` list.
 
+Exact selected-boundary overlays follow `selected`, while initial map framing still uses the current build bounds from `current.dataset_ids`.
+
 ## State file structure
 
 Main state file:
@@ -37,6 +39,8 @@ Important sections:
 ### `.catalog`
 Tracks provider catalog cache information.
 
+After a refresh, catalog state may also record provider-specific cache paths such as the raw Geofabrik index, the slim normalized catalog, and the boundary index used for exact selected-boundary overlays.
+
 ### `.installed`
 Object keyed by dataset id.
 Each entry stores fields such as:
@@ -44,12 +48,16 @@ Each entry stores fields such as:
 - `name`
 - `provider`
 - `parent`
+- `source_id`
 - `download_url`
 - `pbf_path`
 - `dataset_dir`
 - `installed_at`
 - `bounds`
+- `boundary`
 - `update_history` (when available)
+
+`boundary` is a small metadata object that indicates whether an exact provider boundary is available for the dataset. It does not store the full boundary geometry in the state file.
 
 ### `.selected`
 Array of dataset ids chosen for the next rebuild.
@@ -82,6 +90,8 @@ Installed launcher commands include:
 - `self-hosted-maps-rebuild`
 - `self-hosted-maps-refresh-catalog`
 - `self-hosted-maps-list-installed`
+
+`self-hosted-maps-refresh-catalog` also performs the one-time legacy boundary metadata backfill after the catalog refresh completes.
 
 ## Updating datasets
 

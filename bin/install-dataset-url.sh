@@ -46,6 +46,8 @@ done
 DATASET_DIR="$(dataset_dir_for_id "$DATASET_ID")"
 PBF_PATH="$DATASET_DIR/source.osm.pbf"
 INSTALLED_AT="$(date -u +%FT%TZ)"
+CATALOG_FETCHED_AT="$(jq -r '.catalog.fetched_at // ""' "$SHM_STATE_FILE")"
+BOUNDARY_JSON="$(build_boundary_metadata_json false "none" "$CATALOG_FETCHED_AT" "non_catalog_dataset")"
 mkdir -p "$DATASET_DIR"
 
 if [[ ! -f "$PBF_PATH" ]]; then
@@ -63,6 +65,8 @@ META_JSON="$(jq -n \
   --arg pbf "$PBF_PATH" \
   --arg dir "$DATASET_DIR" \
   --arg installed_at "$INSTALLED_AT" \
+  --arg source_id "" \
+  --argjson boundary "$BOUNDARY_JSON" \
   '{
     id: $id,
     name: $name,
@@ -72,7 +76,9 @@ META_JSON="$(jq -n \
     pbf_path: $pbf,
     dataset_dir: $dir,
     installed_at: $installed_at,
-    bounds: []
+    bounds: [],
+    source_id: $source_id,
+    boundary: $boundary
   }')"
 
 printf '%s\n' "$META_JSON" > "$DATASET_DIR/metadata.json"

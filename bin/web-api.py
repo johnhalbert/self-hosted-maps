@@ -25,6 +25,12 @@ STATE_FILE = Path(os.environ.get("SHM_STATE_FILE", str(CONFIG_ROOT / "datasets.j
 CATALOG_FILE = Path(
     os.environ.get("SHM_NORMALIZED_CATALOG", str(DATA_ROOT / "cache" / "catalog" / "catalog.json"))
 )
+BOUNDARY_INDEX_FILE = Path(
+    os.environ.get(
+        "SHM_CATALOG_BOUNDARY_INDEX",
+        str(DATA_ROOT / "cache" / "catalog" / "geofabrik-boundary-index.json"),
+    )
+)
 JOBS_DIR = LOG_ROOT / "api-jobs"
 
 
@@ -56,6 +62,7 @@ def default_state():
             "fetched_at": None,
             "cache_path": None,
             "sources": {},
+            "installed_boundary_backfill": None,
         },
         "installed": {},
         "selected": [],
@@ -93,6 +100,90 @@ def read_catalog_cache():
             return json.load(handle), True
     except (OSError, json.JSONDecodeError):
         return [], False
+
+
+def read_boundary_index(state=None):
+    catalog = (state or {}).get("catalog") or {}
+    sources = catalog.get("sources") or {}
+    geofabrik = sources.get("geofabrik") or {}
+    path = Path(geofabrik.get("boundary_index_path") or BOUNDARY_INDEX_FILE)
+    if not path.exists():
+        return {}, False
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}, False
+    items = payload.get("items") if isinstance(payload, dict) else {}
+    if not isinstance(items, dict):
+        return {}, False
+    return items, True
+
+
+def empty_feature_collection():
+    return {"type": "FeatureCollection", "features": []}
+
+
+def normalize_bounds(bounds):
+    if not isinstance(bounds, list) or len(bounds) != 4:
+        return None
+    try:
+        west, south, east, north = [float(value) for value in bounds]
+    except (TypeError, ValueError):
+        return None
+    if west >= east or south >= north:
+        return None
+    return [[west, south], [east, north]]
+
+
+def merge_bounds(left, right):
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return [
+        [min(left[0][0], right[0][0]), min(left[0][1], right[0][1])],
+        [max(left[1][0], right[1][0]), max(left[1][1], right[1][1])],
+    ]
+
+
+def compute_bounds_for_dataset_ids(dataset_ids, installed):
+    if not dataset_ids:
+        return None
+    merged = None
+    for dataset_id in dataset_ids:
+        meta = installed.get(dataset_id) or {}
+        bounds = normalize_bounds(meta.get("bounds") or [])
+        if not bounds:
+            return None
+        merged = merge_bounds(merged, bounds)
+    return merged
+
+
+def default_boundary_reason(meta):
+    boundary = meta.get("boundary") or {}
+    if boundary.get("reason"):
+        return str(boundary["reason"])
+    provider = str(meta.get("provider") or "unknown")
+    if provider in {"custom", "osm"}:
+        return "non_catalog_dataset"
+    if provider == "bbbike":
+        return "provider_boundary_unavailable"
+    if provider == "geofabrik":
+        if not (meta.get("source_id") or "").strip():
+            return "catalog_refresh_required"
+        return "catalog_boundary_missing"
+    return "boundary_unavailable"
+
+
+def build_missing_boundary_item(dataset_id, meta=None, reason=None):
+    meta = meta or {}
+    return {
+        "id": dataset_id,
+        "name": meta.get("name") or dataset_id,
+        "provider": meta.get("provider") or "unknown",
+        "reason": reason or default_boundary_reason(meta),
+    }
 
 
 def human_size(size_bytes: int) -> str:
@@ -149,6 +240,8 @@ def build_overview():
     state, state_present = read_state()
     stale = compute_stale_flags(state)
     rebuilt_at = (state.get("current") or {}).get("rebuilt_at")
+    installed = state.get("installed") or {}
+    current_bounds = compute_bounds_for_dataset_ids(stale["currentIds"], installed)
     tilejson_url = "/data/openmaptiles.json"
     if rebuilt_at:
         tilejson_url = f"{tilejson_url}?v={urlparse.quote(rebuilt_at, safe='')}"
@@ -159,6 +252,7 @@ def build_overview():
         "current": state.get("current") or {},
         "bootstrap": state.get("bootstrap") or {},
         "tilejsonUrl": tilejson_url,
+        "currentBounds": current_bounds,
         **stale,
     }
 
@@ -183,6 +277,9 @@ def build_dataset_list():
                 "downloadUrl": meta.get("download_url") or "",
                 "installedAt": meta.get("installed_at") or "",
                 "bounds": meta.get("bounds") or [],
+                "sourceId": meta.get("source_id") or "",
+                "boundaryAvailable": bool((meta.get("boundary") or {}).get("available")),
+                "boundaryReason": default_boundary_reason(meta),
                 "selected": dataset_id in selected,
                 "current": dataset_id in current,
                 "bootstrap": dataset_id == bootstrap_id,
@@ -209,12 +306,86 @@ def build_catalog_response(query: str):
         haystack = " ".join([name, dataset_id, provider, parent]).lower()
         if query_lower and query_lower not in haystack:
             continue
-        filtered.append(item)
+        filtered.append(
+            {
+                "id": dataset_id,
+                "sourceId": str(item.get("source_id") or ""),
+                "name": name,
+                "provider": provider,
+                "parent": parent,
+                "downloadUrl": str(item.get("download_url") or ""),
+                "bounds": item.get("bounds") or [],
+                "boundaryAvailable": bool(item.get("boundary_available")),
+            }
+        )
     return {
         "statePresent": state_present,
         "cachePresent": cache_present,
         "catalog": state.get("catalog") or {},
         "items": filtered,
+    }
+
+
+def build_selected_area_response():
+    state, _ = read_state()
+    installed = state.get("installed") or {}
+    selected_ids = [str(dataset_id) for dataset_id in (state.get("selected") or []) if str(dataset_id).strip()]
+    boundary_index, boundary_index_present = read_boundary_index(state)
+    available_ids = []
+    missing_ids = []
+    missing_items = []
+    features = []
+
+    for dataset_id in selected_ids:
+        meta = installed.get(dataset_id)
+        if not meta:
+            missing_ids.append(dataset_id)
+            missing_items.append(build_missing_boundary_item(dataset_id, reason="not_installed"))
+            continue
+
+        boundary = meta.get("boundary") or {}
+        source_id = str(meta.get("source_id") or "").strip()
+        if not boundary.get("available"):
+            missing_ids.append(dataset_id)
+            missing_items.append(build_missing_boundary_item(dataset_id, meta))
+            continue
+
+        if not source_id:
+            missing_ids.append(dataset_id)
+            missing_items.append(build_missing_boundary_item(dataset_id, meta, "catalog_refresh_required"))
+            continue
+
+        feature_data = boundary_index.get(source_id) if boundary_index_present else None
+        geometry = feature_data.get("geometry") if isinstance(feature_data, dict) else None
+        if not geometry:
+            missing_ids.append(dataset_id)
+            reason = "boundary_index_unavailable" if not boundary_index_present else "catalog_boundary_missing"
+            missing_items.append(build_missing_boundary_item(dataset_id, meta, reason))
+            continue
+
+        available_ids.append(dataset_id)
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "datasetId": dataset_id,
+                    "sourceId": source_id,
+                    "name": meta.get("name") or feature_data.get("name") or dataset_id,
+                    "provider": meta.get("provider") or feature_data.get("provider") or "unknown",
+                    "parent": meta.get("parent") or feature_data.get("parent") or "",
+                },
+            }
+        )
+
+    feature_collection = empty_feature_collection()
+    feature_collection["features"] = features
+    return {
+        "selectedIds": selected_ids,
+        "availableBoundaryIds": available_ids,
+        "missingBoundaryIds": missing_ids,
+        "missingItems": missing_items,
+        "featureCollection": feature_collection,
     }
 
 
@@ -565,6 +736,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/catalog":
                 query_text = (query.get("q") or [""])[0]
                 self._send_json(200, json_response(True, build_catalog_response(query_text)))
+            elif path == "/api/selected-area":
+                self._send_json(200, json_response(True, build_selected_area_response()))
             elif path == "/api/capabilities":
                 self._send_json(200, json_response(True, build_capabilities()))
             elif path == "/api/search":
@@ -636,7 +809,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             if path == "/api/admin/refresh-catalog":
-                job = JOB_STORE.create("refresh_catalog", ["bash", str(BIN_DIR / "fetch-catalog.sh")])
+                job = JOB_STORE.create("refresh_catalog", ["bash", str(BIN_DIR / "refresh-catalog.sh")])
             elif path == "/api/admin/install":
                 dataset_id = (payload.get("datasetId") or "").strip()
                 if not dataset_id:

@@ -27,9 +27,10 @@ fi
 SHM_BIN_DIR="$(cd "$(dirname "$SHM_COMMON_SOURCE")" && pwd)"
 SHM_STATE_FILE="${SHM_STATE_FILE:-${SHM_CONFIG_ROOT}/datasets.json}"
 SHM_CATALOG_DIR="${SHM_CATALOG_DIR:-${SHM_DATA_ROOT}/cache/catalog}"
-SHM_GEOFABRIK_CATALOG="${SHM_GEOFABRIK_CATALOG:-${SHM_CATALOG_DIR}/geofabrik-index-v1-nogeom.json}"
+SHM_GEOFABRIK_CATALOG="${SHM_GEOFABRIK_CATALOG:-${SHM_CATALOG_DIR}/geofabrik-index-v1.json}"
 SHM_BBBIKE_INDEX_HTML="${SHM_BBBIKE_INDEX_HTML:-${SHM_CATALOG_DIR}/bbbike-index.html}"
 SHM_NORMALIZED_CATALOG="${SHM_NORMALIZED_CATALOG:-${SHM_CATALOG_DIR}/catalog.json}"
+SHM_CATALOG_BOUNDARY_INDEX="${SHM_CATALOG_BOUNDARY_INDEX:-${SHM_CATALOG_DIR}/geofabrik-boundary-index.json}"
 SHM_DATASETS_DIR="${SHM_DATASETS_DIR:-${SHM_DATA_ROOT}/datasets}"
 SHM_SELECTED_BUILD_DIR="${SHM_SELECTED_BUILD_DIR:-${SHM_DATA_ROOT}/builds/selected}"
 SHM_LOCK_DIR="${SHM_LOCK_DIR:-${SHM_DATA_ROOT}/locks}"
@@ -55,7 +56,9 @@ ensure_state_file() {
     "provider": "multi",
     "providers": [],
     "fetched_at": null,
-    "cache_path": null
+    "cache_path": null,
+    "sources": {},
+    "installed_boundary_backfill": null
   },
   "installed": {},
   "selected": [],
@@ -64,7 +67,8 @@ ensure_state_file() {
     "artifact_path": null,
     "rebuilt_at": null,
     "dataset_ids": []
-  }
+  },
+  "bootstrap": {}
 }
 JSON
   fi
@@ -95,4 +99,82 @@ json_compact_array_from_args() {
     return 0
   fi
   printf '%s\n' "$@" | jq -Rsc 'split("\n")[:-1] | unique'
+}
+
+catalog_entry_by_id() {
+  local dataset_id="$1"
+  local catalog_path="${2:-$SHM_NORMALIZED_CATALOG}"
+  jq -ce --arg id "$dataset_id" '
+    first(.[] | select((.id // "") == $id))
+  ' "$catalog_path"
+}
+
+find_catalog_entry_for_installed_dataset() {
+  local dataset_id="$1"
+  local catalog_path="${2:-$SHM_NORMALIZED_CATALOG}"
+  local state_path="${3:-$SHM_STATE_FILE}"
+  local source_id download_url result
+
+  source_id="$(jq -r --arg id "$dataset_id" '.installed[$id].source_id // ""' "$state_path")"
+  download_url="$(jq -r --arg id "$dataset_id" '.installed[$id].download_url // ""' "$state_path")"
+  result=""
+
+  if [[ -n "$source_id" ]]; then
+    result="$(jq -ce --arg source_id "$source_id" '
+      first(.[] | select((.source_id // "") == $source_id))
+    ' "$catalog_path" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$result" || "$result" == "null" ]]; then
+    result="$(catalog_entry_by_id "$dataset_id" "$catalog_path" 2>/dev/null || true)"
+  fi
+
+  if [[ ( -z "$result" || "$result" == "null" ) && -n "$download_url" ]]; then
+    result="$(jq -ce --arg download_url "$download_url" '
+      first(.[] | select((.download_url // "") == $download_url))
+    ' "$catalog_path" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$result" || "$result" == "null" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$result"
+}
+
+default_boundary_reason_for_provider() {
+  local provider="$1"
+  case "$provider" in
+    bbbike)
+      printf 'provider_boundary_unavailable\n'
+      ;;
+    custom|osm)
+      printf 'non_catalog_dataset\n'
+      ;;
+    geofabrik)
+      printf 'catalog_boundary_missing\n'
+      ;;
+    *)
+      printf 'boundary_unavailable\n'
+      ;;
+  esac
+}
+
+build_boundary_metadata_json() {
+  local available="${1:-false}"
+  local source="${2:-none}"
+  local catalog_fetched_at="${3:-}"
+  local reason="${4:-}"
+  jq -cn \
+    --argjson available "$available" \
+    --arg source "$source" \
+    --arg catalog_fetched_at "$catalog_fetched_at" \
+    --arg reason "$reason" '
+      {
+        available: $available,
+        source: $source,
+        catalog_fetched_at: $catalog_fetched_at,
+        reason: $reason
+      }
+    '
 }

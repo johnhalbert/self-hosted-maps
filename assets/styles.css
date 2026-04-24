@@ -375,6 +375,16 @@ body {
   color: #92400e;
 }
 
+.badge.boundary {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.badge.boundary-missing {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
 .toolbar-row {
   display: flex;
   flex-wrap: wrap;

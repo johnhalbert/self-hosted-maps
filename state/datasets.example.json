@@ -4,7 +4,8 @@
     "providers": [],
     "fetched_at": null,
     "cache_path": null,
-    "sources": {}
+    "sources": {},
+    "installed_boundary_backfill": null
   },
   "installed": {},
   "selected": [],
@@ -13,5 +14,6 @@
     "artifact_path": null,
     "rebuilt_at": null,
     "dataset_ids": []
-  }
+  },
+  "bootstrap": {}
 }

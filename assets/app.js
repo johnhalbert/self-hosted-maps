@@ -50,6 +50,13 @@ const appState = {
   flightMenuOpen: false,
   flightMenuPinned: false,
   flightMenuIgnoreNextFocusOpen: false,
+  selectedArea: {
+    selectedIds: [],
+    availableBoundaryIds: [],
+    missingBoundaryIds: [],
+    missingItems: [],
+    featureCollection: emptyFeatureCollection()
+  },
   adminToken: window.localStorage.getItem("shm-admin-token") || "",
   messageTimer: null
 };
@@ -76,9 +83,42 @@ function renderViewerNotice(hasInitialBounds) {
   if (!notice) {
     return;
   }
+  const selectedIds = Array.isArray(appState.selectedArea?.selectedIds)
+    ? appState.selectedArea.selectedIds
+    : [];
+  const availableIds = Array.isArray(appState.selectedArea?.availableBoundaryIds)
+    ? appState.selectedArea.availableBoundaryIds
+    : [];
+  const missingItems = Array.isArray(appState.selectedArea?.missingItems)
+    ? appState.selectedArea.missingItems
+    : [];
+  let boundaryText = "Exact selected boundaries appear here when available.";
+  if (selectedIds.length) {
+    if (availableIds.length === selectedIds.length) {
+      boundaryText = `Showing exact selected boundaries for ${availableIds.length} selected dataset${
+        availableIds.length === 1 ? "" : "s"
+      }.`;
+    } else if (availableIds.length > 0) {
+      const missingNames = missingItems
+        .map((item) => item?.name || item?.id)
+        .filter(Boolean)
+        .join(", ");
+      boundaryText = `Showing exact selected boundaries for ${availableIds.length} of ${selectedIds.length} selected datasets.${
+        missingNames ? ` Missing: ${missingNames}.` : ""
+      }`;
+    } else {
+      const missingNames = missingItems
+        .map((item) => item?.name || item?.id)
+        .filter(Boolean)
+        .join(", ");
+      boundaryText = missingNames
+        ? `No exact selected boundaries are available yet. Missing: ${missingNames}.`
+        : "No exact selected boundaries are available yet.";
+    }
+  }
   notice.textContent = hasInitialBounds
-    ? "Initial map extent uses stored data bounds. Exact region boundaries are not shown in this view."
-    : "Exact region boundaries are not shown in this view.";
+    ? `Map framing uses stored data bounds. ${boundaryText}`
+    : boundaryText;
   notice.hidden = false;
 }
 
@@ -112,102 +152,39 @@ function isValidBounds(bounds) {
   );
 }
 
-function normalizeDatasetBounds(bounds) {
-  if (!Array.isArray(bounds) || bounds.length !== 4) {
-    return null;
+function resolveCurrentAreaBounds(initialBounds) {
+  const overviewBounds = appState.overview?.currentBounds;
+  if (isValidBounds(overviewBounds)) {
+    return overviewBounds;
   }
-  const numericBounds = bounds.map(Number);
-  if (numericBounds.some((value) => !Number.isFinite(value))) {
-    return null;
-  }
-  const normalizedBounds = [
-    [numericBounds[0], numericBounds[1]],
-    [numericBounds[2], numericBounds[3]]
-  ];
-  return isValidBounds(normalizedBounds) ? normalizedBounds : null;
+  return isValidBounds(initialBounds) ? initialBounds : null;
 }
 
-function mergeBounds(leftBounds, rightBounds) {
-  if (!leftBounds) {
-    return rightBounds;
-  }
-  if (!rightBounds) {
-    return leftBounds;
-  }
-  return [
-    [
-      Math.min(leftBounds[0][0], rightBounds[0][0]),
-      Math.min(leftBounds[0][1], rightBounds[0][1])
-    ],
-    [
-      Math.max(leftBounds[1][0], rightBounds[1][0]),
-      Math.max(leftBounds[1][1], rightBounds[1][1])
-    ]
-  ];
-}
-
-function boundsToFeatureCollection(bounds) {
-  if (!isValidBounds(bounds)) {
-    return emptyFeatureCollection();
-  }
-  const [[west, south], [east, north]] = bounds;
+function normalizeSelectedAreaData(data) {
+  const featureCollection =
+    data?.featureCollection && data.featureCollection.type === "FeatureCollection"
+      ? data.featureCollection
+      : emptyFeatureCollection();
   return {
-    type: "FeatureCollection",
-    features: [
-      {
-        type: "Feature",
-        properties: {},
-        geometry: {
-          type: "Polygon",
-          coordinates: [
-            [
-              [west, south],
-              [west, north],
-              [east, north],
-              [east, south],
-              [west, south]
-            ]
-          ]
-        }
-      }
-    ]
+    selectedIds: Array.isArray(data?.selectedIds) ? data.selectedIds : [],
+    availableBoundaryIds: Array.isArray(data?.availableBoundaryIds) ? data.availableBoundaryIds : [],
+    missingBoundaryIds: Array.isArray(data?.missingBoundaryIds) ? data.missingBoundaryIds : [],
+    missingItems: Array.isArray(data?.missingItems) ? data.missingItems : [],
+    featureCollection
   };
 }
 
-async function resolveCurrentAreaBounds(initialBounds) {
-  if (isValidBounds(initialBounds)) {
-    return initialBounds;
+function applySelectedAreaOverlay() {
+  if (!appState.map || !appState.map.isStyleLoaded()) {
+    return;
   }
-
-  const overview = appState.overview || {};
-  const currentIds = Array.isArray(overview.currentIds) ? overview.currentIds : [];
-  const missingCurrentDatasetIds = Array.isArray(overview.missingCurrentDatasetIds)
-    ? overview.missingCurrentDatasetIds
-    : [];
-  if (!currentIds.length || missingCurrentDatasetIds.length) {
-    return null;
-  }
-
-  try {
-    const data = await requestJson("/api/datasets");
-    const itemsById = new Map((data.items || []).map((item) => [item.id, item]));
-    let mergedBounds = null;
-    for (const datasetId of currentIds) {
-      const item = itemsById.get(datasetId);
-      const datasetBounds = normalizeDatasetBounds(item?.bounds);
-      if (!item || !datasetBounds) {
-        return null;
-      }
-      mergedBounds = mergeBounds(mergedBounds, datasetBounds);
-    }
-    return mergedBounds;
-  } catch (error) {
-    console.warn("Unable to resolve current area bounds.", error);
-    return null;
+  const source = appState.map.getSource("selectedArea");
+  if (source) {
+    source.setData(appState.selectedArea.featureCollection);
   }
 }
 
-function buildStyle(tilejsonUrl, currentAreaData) {
+function buildStyle(tilejsonUrl, selectedAreaData) {
   return {
     version: 8,
     glyphs: "/fonts/{fontstack}/{range}.pbf",
@@ -216,9 +193,9 @@ function buildStyle(tilejsonUrl, currentAreaData) {
         type: "geojson",
         data: "/world-land.geojson"
       },
-      currentArea: {
+      selectedArea: {
         type: "geojson",
-        data: currentAreaData
+        data: selectedAreaData
       },
       osm: {
         type: "vector",
@@ -241,9 +218,9 @@ function buildStyle(tilejsonUrl, currentAreaData) {
         }
       },
       {
-        id: "current-area-fill",
+        id: "selected-area-fill",
         type: "fill",
-        source: "currentArea",
+        source: "selectedArea",
         paint: {
           "fill-color": "#f4efe3",
           "fill-opacity": 1
@@ -332,6 +309,16 @@ function buildStyle(tilejsonUrl, currentAreaData) {
         paint: {
           "fill-color": "#d7c7b5",
           "fill-outline-color": "#b79f8b"
+        }
+      },
+      {
+        id: "selected-area-outline",
+        type: "line",
+        source: "selectedArea",
+        paint: {
+          "line-color": "#c4a46d",
+          "line-width": 2,
+          "line-opacity": 0.8
         }
       },
       {
@@ -439,6 +426,7 @@ async function safeLoadOverview() {
     appState.overview = {
       tilejsonUrl: "/data/openmaptiles.json",
       current: {},
+      currentBounds: null,
       selected: [],
       currentIds: [],
       selectedIds: [],
@@ -453,6 +441,15 @@ async function safeLoadCapabilities() {
     appState.capabilities = await requestJson("/api/capabilities");
   } catch (error) {
     console.warn("Falling back to default capabilities.", error);
+  }
+}
+
+async function safeLoadSelectedArea() {
+  try {
+    appState.selectedArea = normalizeSelectedAreaData(await requestJson("/api/selected-area"));
+  } catch (error) {
+    console.warn("Falling back to empty selected-area overlay.", error);
+    appState.selectedArea = normalizeSelectedAreaData(null);
   }
 }
 
@@ -746,9 +743,21 @@ async function runSearch() {
 function renderOverviewSummary() {
   const container = document.getElementById("mapSummary");
   const overview = appState.overview || {};
+  const selectedArea = appState.selectedArea || {};
   const currentIds = overview.currentIds || [];
   const selectedIds = overview.selectedIds || [];
   const staleNote = overview.currentIsStale ? "Pending rebuild" : "In sync";
+  const availableBoundaryIds = selectedArea.availableBoundaryIds || [];
+  const missingItems = selectedArea.missingItems || [];
+  const boundarySummary = selectedIds.length
+    ? `${
+        availableBoundaryIds.length
+      } of ${selectedIds.length} exact boundaries available${
+        missingItems.length
+          ? `; missing ${missingItems.map((item) => item.name || item.id).join(", ")}`
+          : ""
+      }`
+    : "No selected exact boundaries";
   container.innerHTML = `
     <div class="summary-row">
       <strong>Loaded now</strong>
@@ -761,6 +770,10 @@ function renderOverviewSummary() {
     <div class="summary-row">
       <strong>Current state</strong>
       <div>${staleNote}${overview.current?.rebuilt_at ? `, rebuilt ${overview.current.rebuilt_at}` : ""}</div>
+    </div>
+    <div class="summary-row">
+      <strong>Selected boundary overlay</strong>
+      <div>${boundarySummary}</div>
     </div>
   `;
 }
@@ -775,6 +788,12 @@ function datasetBadges(item) {
   }
   if (item.bootstrap) {
     badges.push('<span class="badge bootstrap">Bootstrap</span>');
+  }
+  if (item.boundaryAvailable) {
+    badges.push('<span class="badge boundary">Exact boundary</span>');
+  } else {
+    const reason = item.boundaryReason || "Exact boundary unavailable";
+    badges.push(`<span class="badge boundary-missing" title="${reason}">No exact boundary</span>`);
   }
   return badges.length ? `<div class="badge-row">${badges.join("")}</div>` : "";
 }
@@ -862,15 +881,19 @@ function renderJob() {
 }
 
 async function refreshModalData() {
-  const [overview, datasets] = await Promise.all([
+  const [overview, datasets, selectedArea] = await Promise.all([
     requestJson("/api/state"),
-    requestJson("/api/datasets")
+    requestJson("/api/datasets"),
+    requestJson("/api/selected-area")
   ]);
   appState.overview = overview;
   appState.datasets = datasets.items || [];
+  appState.selectedArea = normalizeSelectedAreaData(selectedArea);
   renderOverviewSummary();
   renderDownloadedMaps();
   renderSelectionList();
+  renderViewerNotice(Boolean(resolveCurrentAreaBounds(null)));
+  applySelectedAreaOverlay();
 }
 
 async function searchCatalog() {
@@ -1070,17 +1093,18 @@ function bindDomEvents() {
 async function initMap() {
   const tilejsonUrl = appState.overview?.tilejsonUrl || "/data/openmaptiles.json";
   const initialView = await loadTileJsonView(tilejsonUrl);
-  const currentAreaBounds = await resolveCurrentAreaBounds(initialView.bounds);
+  const currentAreaBounds = resolveCurrentAreaBounds(initialView.bounds);
   renderViewerNotice(Boolean(currentAreaBounds));
   appState.map = new maplibregl.Map({
     container: "map",
-    style: buildStyle(tilejsonUrl, emptyFeatureCollection()),
+    style: buildStyle(tilejsonUrl, appState.selectedArea.featureCollection),
     center: initialView.center,
     zoom: initialView.zoom
   });
   appState.map.addControl(new maplibregl.NavigationControl(), "top-right");
   appState.map.on("load", () => {
     ensureFlightLayers();
+    applySelectedAreaOverlay();
     if (currentAreaBounds) {
       appState.map.fitBounds(currentAreaBounds, {
         padding: 40,
@@ -1101,7 +1125,7 @@ async function initMap() {
 
 async function init() {
   bindDomEvents();
-  await Promise.all([safeLoadOverview(), safeLoadCapabilities()]);
+  await Promise.all([safeLoadOverview(), safeLoadCapabilities(), safeLoadSelectedArea()]);
   updateFlightButtons();
   await initMap();
 }

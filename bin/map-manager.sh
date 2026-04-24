@@ -175,8 +175,8 @@ browse_catalog_ui() {
 }
 
 refresh_catalog_ui() {
-  bash "$SHM_BIN_DIR/fetch-catalog.sh" >/dev/null
-  whiptail --title "Refresh Catalog" --msgbox "Catalog refreshed from Geofabrik." 10 60
+  bash "$SHM_BIN_DIR/refresh-catalog.sh" >/dev/null
+  whiptail --title "Refresh Catalog" --msgbox "Catalog refreshed from Geofabrik. Legacy boundary metadata was backfilled if needed." 10 78
 }
 
 check_updates_ui() {

@@ -63,7 +63,7 @@ parse_header_value() {
 
 build_record() {
   local id="$1"
-  local name provider url installed_at pbf_path local_size catalog_url head_response remote_last_modified_raw remote_last_modified_iso remote_content_length update_status note
+  local name provider url installed_at pbf_path local_size catalog_url catalog_json head_response remote_last_modified_raw remote_last_modified_iso remote_content_length update_status note
   name="$(jq -r --arg id "$id" '.installed[$id].name // $id' "$SHM_STATE_FILE")"
   provider="$(jq -r --arg id "$id" '.installed[$id].provider // "unknown"' "$SHM_STATE_FILE")"
   url="$(jq -r --arg id "$id" '.installed[$id].download_url // ""' "$SHM_STATE_FILE")"
@@ -77,7 +77,10 @@ build_record() {
 
   catalog_url=""
   if [[ -f "$SHM_NORMALIZED_CATALOG" ]]; then
-    catalog_url="$(jq -r --arg id "$id" '.[] | select(.id == $id) | .download_url // empty' "$SHM_NORMALIZED_CATALOG" | head -1)"
+    catalog_json="$(bash "$SHM_BIN_DIR/find-dataset.sh" --installed "$id" 2>/dev/null || true)"
+    if [[ -n "$catalog_json" ]]; then
+      catalog_url="$(jq -r '.download_url // empty' <<<"$catalog_json")"
+    fi
   fi
 
   if [[ -n "$catalog_url" ]]; then

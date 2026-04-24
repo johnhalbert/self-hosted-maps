@@ -33,6 +33,14 @@ PROVIDER="$(jq -r '.provider' <<<"$DATASET_JSON")"
 PARENT="$(jq -r '.parent' <<<"$DATASET_JSON")"
 URL="$(jq -r '.download_url' <<<"$DATASET_JSON")"
 BOUNDS_JSON="$(jq -c '.bounds // []' <<<"$DATASET_JSON")"
+SOURCE_ID="$(jq -r '.source_id // ""' <<<"$DATASET_JSON")"
+BOUNDARY_AVAILABLE="$(jq -r 'if (.boundary_available // false) then "true" else "false" end' <<<"$DATASET_JSON")"
+CATALOG_FETCHED_AT="$(jq -r '.catalog.fetched_at // ""' "$SHM_STATE_FILE")"
+BOUNDARY_REASON=""
+if [[ "$BOUNDARY_AVAILABLE" != "true" ]]; then
+  BOUNDARY_REASON="$(default_boundary_reason_for_provider "$PROVIDER")"
+fi
+BOUNDARY_JSON="$(build_boundary_metadata_json "$BOUNDARY_AVAILABLE" "catalog" "$CATALOG_FETCHED_AT" "$BOUNDARY_REASON")"
 DATASET_DIR="$(dataset_dir_for_id "$DATASET_ID")"
 PBF_PATH="$DATASET_DIR/source.osm.pbf"
 INSTALLED_AT="$(date -u +%FT%TZ)"
@@ -55,7 +63,9 @@ META_JSON="$(jq -n \
   --arg pbf "$PBF_PATH" \
   --arg dir "$DATASET_DIR" \
   --arg installed_at "$INSTALLED_AT" \
+  --arg source_id "$SOURCE_ID" \
   --argjson bounds "$BOUNDS_JSON" \
+  --argjson boundary "$BOUNDARY_JSON" \
   '{
     id: $id,
     name: $name,
@@ -65,7 +75,9 @@ META_JSON="$(jq -n \
     pbf_path: $pbf,
     dataset_dir: $dir,
     installed_at: $installed_at,
-    bounds: $bounds
+    bounds: $bounds,
+    source_id: $source_id,
+    boundary: $boundary
   }')"
 
 printf '%s\n' "$META_JSON" > "$DATASET_DIR/metadata.json"
