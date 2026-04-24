@@ -380,6 +380,11 @@ body {
   color: #6d28d9;
 }
 
+.badge.boundary-provider {
+  background: #fef3c7;
+  color: #92400e;
+}
+
 .badge.boundary-missing {
   background: #fee2e2;
   color: #b91c1c;

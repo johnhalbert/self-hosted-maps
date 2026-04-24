@@ -4,6 +4,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -31,7 +32,10 @@ BOUNDARY_INDEX_FILE = Path(
         str(DATA_ROOT / "cache" / "catalog" / "geofabrik-boundary-index.json"),
     )
 )
+DISPLAY_BOUNDARY_INDEX_NAME = "us-state-display-boundary-index.json"
+DISPLAY_BOUNDARY_INDEX_ENV = "SHM_DISPLAY_BOUNDARY_INDEX_FILE"
 JOBS_DIR = LOG_ROOT / "api-jobs"
+JSON_FILE_CACHE = {}
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -92,14 +96,37 @@ def read_state():
     return merged, True
 
 
-def read_catalog_cache():
-    if not CATALOG_FILE.exists():
-        return [], False
+def read_json_file(path: Path, warn_label: str = ""):
+    cache_key = str(path)
     try:
-        with CATALOG_FILE.open("r", encoding="utf-8") as handle:
-            return json.load(handle), True
-    except (OSError, json.JSONDecodeError):
+        stat = path.stat()
+    except OSError:
+        JSON_FILE_CACHE.pop(cache_key, None)
+        return None, False
+
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = JSON_FILE_CACHE.get(cache_key)
+    if cached and cached.get("signature") == signature:
+        return cached.get("data"), True
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        JSON_FILE_CACHE.pop(cache_key, None)
+        if warn_label:
+            print(f"Warning: unable to read {warn_label} at {path}: {exc}", file=sys.stderr, flush=True)
+        return None, False
+
+    JSON_FILE_CACHE[cache_key] = {"signature": signature, "data": payload}
+    return payload, True
+
+
+def read_catalog_cache():
+    payload, present = read_json_file(CATALOG_FILE)
+    if not present or not isinstance(payload, list):
         return [], False
+    return payload, True
 
 
 def read_boundary_index(state=None):
@@ -109,15 +136,161 @@ def read_boundary_index(state=None):
     path = Path(geofabrik.get("boundary_index_path") or BOUNDARY_INDEX_FILE)
     if not path.exists():
         return {}, False
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    payload, present = read_json_file(path)
+    if not present:
         return {}, False
     items = payload.get("items") if isinstance(payload, dict) else {}
     if not isinstance(items, dict):
         return {}, False
     return items, True
+
+
+def is_checkout_tree(root: Path) -> bool:
+    return (root / "assets" / "app.js").exists() and (root / "scripts" / "install-runtime.sh").exists()
+
+
+def resolve_display_boundary_index_path(install_root: Path | None = None, env_path: str | None = None):
+    root = Path(install_root or INSTALL_ROOT)
+    override = env_path if env_path is not None else os.environ.get(DISPLAY_BOUNDARY_INDEX_ENV, "").strip()
+    if override:
+        return Path(override)
+
+    installed_path = root / "www" / DISPLAY_BOUNDARY_INDEX_NAME
+    if installed_path.exists():
+        return installed_path
+
+    if is_checkout_tree(root):
+        repo_path = root / "assets" / DISPLAY_BOUNDARY_INDEX_NAME
+        if repo_path.exists():
+            return repo_path
+
+    return None
+
+
+def read_display_boundary_index():
+    path = resolve_display_boundary_index_path()
+    if path is None:
+        return {}, False
+    if not path.exists():
+        print(f"Warning: display boundary index not found at {path}", file=sys.stderr, flush=True)
+        return {}, False
+
+    payload, present = read_json_file(path, warn_label="display boundary index")
+    if not present or not isinstance(payload, dict):
+        return {}, False
+
+    items = payload.get("items") if isinstance(payload, dict) else {}
+    if not isinstance(items, dict):
+        print(f"Warning: invalid display boundary index payload at {path}", file=sys.stderr, flush=True)
+        return {}, False
+    return items, True
+
+
+def build_catalog_lookup(items):
+    lookup = {"by_id": {}, "by_source_id": {}, "by_download_url": {}}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        dataset_id = str(item.get("id") or "").strip()
+        source_id = str(item.get("source_id") or "").strip()
+        download_url = str(item.get("download_url") or "").strip()
+        if dataset_id and dataset_id not in lookup["by_id"]:
+            lookup["by_id"][dataset_id] = item
+        if source_id and source_id not in lookup["by_source_id"]:
+            lookup["by_source_id"][source_id] = item
+        if download_url and download_url not in lookup["by_download_url"]:
+            lookup["by_download_url"][download_url] = item
+    return lookup
+
+
+def resolve_catalog_entry_for_installed_dataset(dataset_id, meta, catalog_lookup):
+    if not catalog_lookup:
+        return None
+
+    source_id = str(meta.get("source_id") or "").strip()
+    if source_id:
+        match = catalog_lookup["by_source_id"].get(source_id)
+        if match:
+            return match
+
+    match = catalog_lookup["by_id"].get(str(dataset_id))
+    if match:
+        return match
+
+    download_url = str(meta.get("download_url") or "").strip()
+    if download_url:
+        return catalog_lookup["by_download_url"].get(download_url)
+    return None
+
+
+def extract_geometry(entry):
+    geometry = entry.get("geometry") if isinstance(entry, dict) else None
+    return geometry if isinstance(geometry, dict) else None
+
+
+def overlay_boundary_label(source: str) -> str:
+    if source == "display":
+        return "Curated display boundary"
+    if source == "provider":
+        return "Provider boundary fallback"
+    return "No boundary overlay"
+
+
+def resolve_overlay_state(dataset_id, meta, catalog_lookup, boundary_index, boundary_index_present, display_index):
+    meta = meta or {}
+    catalog_item = resolve_catalog_entry_for_installed_dataset(dataset_id, meta, catalog_lookup)
+
+    source_id = str((catalog_item or {}).get("source_id") or meta.get("source_id") or "").strip()
+    provider = str(meta.get("provider") or (catalog_item or {}).get("provider") or "unknown")
+    name = str(meta.get("name") or (catalog_item or {}).get("name") or dataset_id)
+    parent = str(meta.get("parent") or (catalog_item or {}).get("parent") or "")
+
+    display_entry = display_index.get(source_id) if provider == "geofabrik" and source_id else None
+    display_geometry = extract_geometry(display_entry)
+
+    provider_entry = boundary_index.get(source_id) if provider == "geofabrik" and source_id and boundary_index_present else None
+    provider_geometry = extract_geometry(provider_entry)
+
+    provider_reason = ""
+    if provider == "geofabrik":
+        if not provider_geometry:
+            if not source_id:
+                provider_reason = "catalog_refresh_required"
+            elif not boundary_index_present:
+                provider_reason = "boundary_index_unavailable"
+            else:
+                provider_reason = "catalog_boundary_missing"
+    elif not bool((meta.get("boundary") or {}).get("available")):
+        provider_reason = default_boundary_reason(meta)
+
+    overlay_source = ""
+    overlay_reason = ""
+    overlay_geometry = None
+    if display_geometry:
+        overlay_source = "display"
+        overlay_geometry = display_geometry
+    elif provider_geometry:
+        overlay_source = "provider"
+        overlay_geometry = provider_geometry
+        overlay_reason = "display_boundary_unavailable"
+    else:
+        overlay_reason = provider_reason or default_boundary_reason(meta)
+
+    return {
+        "datasetId": dataset_id,
+        "sourceId": source_id,
+        "provider": provider,
+        "name": name,
+        "parent": parent,
+        "geometry": overlay_geometry,
+        "overlayBoundaryAvailable": bool(overlay_geometry),
+        "overlayBoundarySource": overlay_source,
+        "overlayBoundaryLabel": overlay_boundary_label(overlay_source),
+        "overlayBoundaryReason": overlay_reason,
+        "displayBoundaryAvailable": bool(display_geometry),
+        "providerBoundaryAvailable": bool(provider_geometry),
+        "providerBoundaryReason": provider_reason,
+    }
 
 
 def empty_feature_collection():
@@ -263,9 +436,21 @@ def build_dataset_list():
     selected = set(state.get("selected") or [])
     current = set((state.get("current") or {}).get("dataset_ids") or [])
     bootstrap_id = (state.get("bootstrap") or {}).get("dataset_id")
+    catalog_items, _ = read_catalog_cache()
+    catalog_lookup = build_catalog_lookup(catalog_items)
+    boundary_index, boundary_index_present = read_boundary_index(state)
+    display_index, _ = read_display_boundary_index()
     items = []
     for dataset_id in sorted(installed.keys()):
         meta = installed.get(dataset_id) or {}
+        overlay = resolve_overlay_state(
+            dataset_id,
+            meta,
+            catalog_lookup,
+            boundary_index,
+            boundary_index_present,
+            display_index,
+        )
         pbf_size_bytes = read_file_size(meta.get("pbf_path", ""))
         dataset_size_bytes = dir_size(Path(meta.get("dataset_dir", ""))) if meta.get("dataset_dir") else 0
         items.append(
@@ -288,6 +473,13 @@ def build_dataset_list():
                 "datasetSizeBytes": dataset_size_bytes,
                 "datasetSizeHuman": human_size(dataset_size_bytes),
                 "updateHistoryCount": len(meta.get("update_history") or []),
+                "displayBoundaryAvailable": overlay["displayBoundaryAvailable"],
+                "providerBoundaryAvailable": overlay["providerBoundaryAvailable"],
+                "providerBoundaryReason": overlay["providerBoundaryReason"],
+                "overlayBoundaryAvailable": overlay["overlayBoundaryAvailable"],
+                "overlayBoundarySource": overlay["overlayBoundarySource"],
+                "overlayBoundaryLabel": overlay["overlayBoundaryLabel"],
+                "overlayBoundaryReason": overlay["overlayBoundaryReason"],
             }
         )
     return {"statePresent": state_present, "items": items}
@@ -330,8 +522,13 @@ def build_selected_area_response():
     state, _ = read_state()
     installed = state.get("installed") or {}
     selected_ids = [str(dataset_id) for dataset_id in (state.get("selected") or []) if str(dataset_id).strip()]
+    catalog_items, _ = read_catalog_cache()
+    catalog_lookup = build_catalog_lookup(catalog_items)
     boundary_index, boundary_index_present = read_boundary_index(state)
+    display_index, _ = read_display_boundary_index()
     available_ids = []
+    display_ids = []
+    provider_fallback_ids = []
     missing_ids = []
     missing_items = []
     features = []
@@ -343,37 +540,36 @@ def build_selected_area_response():
             missing_items.append(build_missing_boundary_item(dataset_id, reason="not_installed"))
             continue
 
-        boundary = meta.get("boundary") or {}
-        source_id = str(meta.get("source_id") or "").strip()
-        if not boundary.get("available"):
-            missing_ids.append(dataset_id)
-            missing_items.append(build_missing_boundary_item(dataset_id, meta))
-            continue
-
-        if not source_id:
-            missing_ids.append(dataset_id)
-            missing_items.append(build_missing_boundary_item(dataset_id, meta, "catalog_refresh_required"))
-            continue
-
-        feature_data = boundary_index.get(source_id) if boundary_index_present else None
-        geometry = feature_data.get("geometry") if isinstance(feature_data, dict) else None
+        overlay = resolve_overlay_state(
+            dataset_id,
+            meta,
+            catalog_lookup,
+            boundary_index,
+            boundary_index_present,
+            display_index,
+        )
+        geometry = overlay["geometry"]
         if not geometry:
             missing_ids.append(dataset_id)
-            reason = "boundary_index_unavailable" if not boundary_index_present else "catalog_boundary_missing"
-            missing_items.append(build_missing_boundary_item(dataset_id, meta, reason))
+            missing_items.append(build_missing_boundary_item(dataset_id, meta, overlay["overlayBoundaryReason"]))
             continue
 
         available_ids.append(dataset_id)
+        if overlay["overlayBoundarySource"] == "display":
+            display_ids.append(dataset_id)
+        elif overlay["overlayBoundarySource"] == "provider":
+            provider_fallback_ids.append(dataset_id)
         features.append(
             {
                 "type": "Feature",
                 "geometry": geometry,
                 "properties": {
                     "datasetId": dataset_id,
-                    "sourceId": source_id,
-                    "name": meta.get("name") or feature_data.get("name") or dataset_id,
-                    "provider": meta.get("provider") or feature_data.get("provider") or "unknown",
-                    "parent": meta.get("parent") or feature_data.get("parent") or "",
+                    "sourceId": overlay["sourceId"],
+                    "name": overlay["name"],
+                    "provider": overlay["provider"],
+                    "parent": overlay["parent"],
+                    "overlaySource": overlay["overlayBoundarySource"],
                 },
             }
         )
@@ -383,6 +579,8 @@ def build_selected_area_response():
     return {
         "selectedIds": selected_ids,
         "availableBoundaryIds": available_ids,
+        "displayBoundaryIds": display_ids,
+        "providerFallbackIds": provider_fallback_ids,
         "missingBoundaryIds": missing_ids,
         "missingItems": missing_items,
         "featureCollection": feature_collection,

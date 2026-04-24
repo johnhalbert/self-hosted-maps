@@ -26,7 +26,7 @@ Installing a dataset does not automatically make it part of the served map unles
 
 This distinction matters because the selected set may change after a rebuild. The served artifact reflects `current.dataset_ids`, not merely the current `selected` list.
 
-Exact selected-boundary overlays follow `selected`, while initial map framing still uses the current build bounds from `current.dataset_ids`.
+Selected boundary overlays follow `selected`. The viewer now prefers curated display boundaries when available and falls back to provider boundary geometry otherwise. Initial map framing still uses the current build bounds from `current.dataset_ids`.
 
 ## State file structure
 
@@ -39,7 +39,7 @@ Important sections:
 ### `.catalog`
 Tracks provider catalog cache information.
 
-After a refresh, catalog state may also record provider-specific cache paths such as the raw Geofabrik index, the slim normalized catalog, and the boundary index used for exact selected-boundary overlays.
+After a refresh, catalog state may also record provider-specific cache paths such as the raw Geofabrik index, the slim normalized catalog, and the boundary index used for provider boundary overlays. Curated display-boundary data is vendored separately in `assets/us-state-display-boundary-index.json`.
 
 ### `.installed`
 Object keyed by dataset id.
@@ -57,7 +57,7 @@ Each entry stores fields such as:
 - `boundary`
 - `update_history` (when available)
 
-`boundary` is a small metadata object that indicates whether an exact provider boundary is available for the dataset. It does not store the full boundary geometry in the state file.
+`boundary` is a small metadata object that indicates whether provider boundary data is available for the dataset. It does not store the full boundary geometry in the state file and it does not describe curated display-boundary overrides.
 
 ### `.selected`
 Array of dataset ids chosen for the next rebuild.
@@ -91,7 +91,7 @@ Installed launcher commands include:
 - `self-hosted-maps-refresh-catalog`
 - `self-hosted-maps-list-installed`
 
-`self-hosted-maps-refresh-catalog` also performs the one-time legacy boundary metadata backfill after the catalog refresh completes.
+`self-hosted-maps-refresh-catalog` also performs the one-time legacy boundary metadata backfill after the catalog refresh completes. On older installs, that refresh can improve curated display-boundary matching by restoring missing `source_id` values.
 
 ## Updating datasets
 

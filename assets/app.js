@@ -53,6 +53,8 @@ const appState = {
   selectedArea: {
     selectedIds: [],
     availableBoundaryIds: [],
+    displayBoundaryIds: [],
+    providerFallbackIds: [],
     missingBoundaryIds: [],
     missingItems: [],
     featureCollection: emptyFeatureCollection()
@@ -86,34 +88,42 @@ function renderViewerNotice(hasInitialBounds) {
   const selectedIds = Array.isArray(appState.selectedArea?.selectedIds)
     ? appState.selectedArea.selectedIds
     : [];
-  const availableIds = Array.isArray(appState.selectedArea?.availableBoundaryIds)
-    ? appState.selectedArea.availableBoundaryIds
+  const displayIds = Array.isArray(appState.selectedArea?.displayBoundaryIds)
+    ? appState.selectedArea.displayBoundaryIds
+    : [];
+  const providerFallbackIds = Array.isArray(appState.selectedArea?.providerFallbackIds)
+    ? appState.selectedArea.providerFallbackIds
     : [];
   const missingItems = Array.isArray(appState.selectedArea?.missingItems)
     ? appState.selectedArea.missingItems
     : [];
-  let boundaryText = "Exact selected boundaries appear here when available.";
+  let boundaryText = "Selected boundary overlays appear here when available.";
   if (selectedIds.length) {
-    if (availableIds.length === selectedIds.length) {
-      boundaryText = `Showing exact selected boundaries for ${availableIds.length} selected dataset${
-        availableIds.length === 1 ? "" : "s"
-      }.`;
-    } else if (availableIds.length > 0) {
-      const missingNames = missingItems
-        .map((item) => item?.name || item?.id)
-        .filter(Boolean)
-        .join(", ");
-      boundaryText = `Showing exact selected boundaries for ${availableIds.length} of ${selectedIds.length} selected datasets.${
-        missingNames ? ` Missing: ${missingNames}.` : ""
-      }`;
+    const parts = [];
+    const missingNames = missingItems
+      .map((item) => item?.name || item?.id)
+      .filter(Boolean)
+      .join(", ");
+    if (displayIds.length) {
+      parts.push(
+        `${displayIds.length} curated display boundar${displayIds.length === 1 ? "y" : "ies"}`
+      );
+    }
+    if (providerFallbackIds.length) {
+      parts.push(
+        `${providerFallbackIds.length} provider fallback overlay${
+          providerFallbackIds.length === 1 ? "" : "s"
+        }`
+      );
+    }
+    if (parts.length) {
+      boundaryText = `Showing ${parts.join(" and ")} for ${selectedIds.length} selected dataset${
+        selectedIds.length === 1 ? "" : "s"
+      }.${missingNames ? ` Missing: ${missingNames}.` : ""}`;
     } else {
-      const missingNames = missingItems
-        .map((item) => item?.name || item?.id)
-        .filter(Boolean)
-        .join(", ");
       boundaryText = missingNames
-        ? `No exact selected boundaries are available yet. Missing: ${missingNames}.`
-        : "No exact selected boundaries are available yet.";
+        ? `No boundary overlays are available yet. Missing: ${missingNames}.`
+        : "No boundary overlays are available yet.";
     }
   }
   notice.textContent = hasInitialBounds
@@ -168,6 +178,8 @@ function normalizeSelectedAreaData(data) {
   return {
     selectedIds: Array.isArray(data?.selectedIds) ? data.selectedIds : [],
     availableBoundaryIds: Array.isArray(data?.availableBoundaryIds) ? data.availableBoundaryIds : [],
+    displayBoundaryIds: Array.isArray(data?.displayBoundaryIds) ? data.displayBoundaryIds : [],
+    providerFallbackIds: Array.isArray(data?.providerFallbackIds) ? data.providerFallbackIds : [],
     missingBoundaryIds: Array.isArray(data?.missingBoundaryIds) ? data.missingBoundaryIds : [],
     missingItems: Array.isArray(data?.missingItems) ? data.missingItems : [],
     featureCollection
@@ -218,9 +230,20 @@ function buildStyle(tilejsonUrl, selectedAreaData) {
         }
       },
       {
-        id: "selected-area-fill",
+        id: "selected-area-fill-provider",
         type: "fill",
         source: "selectedArea",
+        filter: ["==", ["get", "overlaySource"], "provider"],
+        paint: {
+          "fill-color": "#f7f1e5",
+          "fill-opacity": 0.74
+        }
+      },
+      {
+        id: "selected-area-fill-display",
+        type: "fill",
+        source: "selectedArea",
+        filter: ["==", ["get", "overlaySource"], "display"],
         paint: {
           "fill-color": "#f4efe3",
           "fill-opacity": 1
@@ -312,9 +335,22 @@ function buildStyle(tilejsonUrl, selectedAreaData) {
         }
       },
       {
-        id: "selected-area-outline",
+        id: "selected-area-outline-provider",
         type: "line",
         source: "selectedArea",
+        filter: ["==", ["get", "overlaySource"], "provider"],
+        paint: {
+          "line-color": "#d7bb8a",
+          "line-width": 2,
+          "line-opacity": 0.85,
+          "line-dasharray": [2, 1.5]
+        }
+      },
+      {
+        id: "selected-area-outline-display",
+        type: "line",
+        source: "selectedArea",
+        filter: ["==", ["get", "overlaySource"], "display"],
         paint: {
           "line-color": "#c4a46d",
           "line-width": 2,
@@ -748,16 +784,20 @@ function renderOverviewSummary() {
   const selectedIds = overview.selectedIds || [];
   const staleNote = overview.currentIsStale ? "Pending rebuild" : "In sync";
   const availableBoundaryIds = selectedArea.availableBoundaryIds || [];
+  const displayBoundaryIds = selectedArea.displayBoundaryIds || [];
+  const providerFallbackIds = selectedArea.providerFallbackIds || [];
   const missingItems = selectedArea.missingItems || [];
   const boundarySummary = selectedIds.length
     ? `${
         availableBoundaryIds.length
-      } of ${selectedIds.length} exact boundaries available${
+      } of ${selectedIds.length} overlays available (${displayBoundaryIds.length} curated, ${
+        providerFallbackIds.length
+      } provider fallback)${
         missingItems.length
           ? `; missing ${missingItems.map((item) => item.name || item.id).join(", ")}`
           : ""
       }`
-    : "No selected exact boundaries";
+    : "No selected boundary overlays";
   container.innerHTML = `
     <div class="summary-row">
       <strong>Loaded now</strong>
@@ -789,11 +829,19 @@ function datasetBadges(item) {
   if (item.bootstrap) {
     badges.push('<span class="badge bootstrap">Bootstrap</span>');
   }
-  if (item.boundaryAvailable) {
-    badges.push('<span class="badge boundary">Exact boundary</span>');
+  if (item.overlayBoundarySource === "display") {
+    badges.push('<span class="badge boundary">Display boundary</span>');
+  } else if (item.overlayBoundarySource === "provider") {
+    const reason =
+      item.overlayBoundaryReason || "Using a provider footprint because no curated display boundary exists.";
+    badges.push(`<span class="badge boundary-provider" title="${reason}">Provider fallback</span>`);
   } else {
-    const reason = item.boundaryReason || "Exact boundary unavailable";
-    badges.push(`<span class="badge boundary-missing" title="${reason}">No exact boundary</span>`);
+    const reason =
+      item.overlayBoundaryReason ||
+      item.providerBoundaryReason ||
+      item.boundaryReason ||
+      "No boundary overlay available";
+    badges.push(`<span class="badge boundary-missing" title="${reason}">No boundary overlay</span>`);
   }
   return badges.length ? `<div class="badge-row">${badges.join("")}</div>` : "";
 }
