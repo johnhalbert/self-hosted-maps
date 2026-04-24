@@ -27,6 +27,11 @@ Viewer features:
 - a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
 - right-side flight overlay toggles for OpenSky and ADS-B Exchange when configured
 
+Flight data configuration:
+- OpenSky works anonymously by default. For authenticated REST API access, set SHM_OPENSKY_CLIENT_ID and SHM_OPENSKY_CLIENT_SECRET in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
+- SHM_OPENSKY_TOKEN_URL is optional and defaults to OpenSky's OAuth2 token endpoint.
+- Restart self-hosted-maps-api after changing runtime flight credentials.
+
 Manager capabilities:
 - browse the live catalog
 - install additional datasets over time

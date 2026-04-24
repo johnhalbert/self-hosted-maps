@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,28 @@ MODULE_PATH = REPO_ROOT / "bin" / "web-api.py"
 MODULE_SPEC = importlib.util.spec_from_file_location("web_api", MODULE_PATH)
 web_api = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(web_api)
+
+
+class temporary_env:
+    def __init__(self, **updates):
+        self.updates = updates
+        self.previous = {}
+
+    def __enter__(self):
+        for key, value in self.updates.items():
+            self.previous[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        for key, value in self.previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 class FlightApiTests(unittest.TestCase):
@@ -153,6 +176,174 @@ class FlightApiTests(unittest.TestCase):
             self.assertEqual(detail["raw"]["schema"], "adsbx.aircraft.v1")
         finally:
             web_api.FLIGHT_SNAPSHOT_CACHE = original_cache
+
+    def test_opensky_fetch_stays_anonymous_without_credentials(self):
+        captured = {}
+        original_get = web_api.http_get_json
+        original_post = web_api.http_post_form_json
+        try:
+            web_api.OPENSKY_TOKEN_CACHE.clear()
+
+            def fake_get(url, headers=None, timeout=15):
+                captured["url"] = url
+                captured["headers"] = headers or {}
+                return {"time": 1_700_000_000, "states": []}
+
+            def fake_post(*_args, **_kwargs):
+                raise AssertionError("Token endpoint should not be called without credentials.")
+
+            web_api.http_get_json = fake_get
+            web_api.http_post_form_json = fake_post
+            with temporary_env(
+                SHM_OPENSKY_CLIENT_ID="",
+                SHM_OPENSKY_CLIENT_SECRET="",
+                SHM_OPENSKY_TOKEN_URL=None,
+            ):
+                web_api.fetch_opensky({"lamin": ["30"], "lomin": ["-91"], "lamax": ["31"], "lomax": ["-90"]})
+
+            self.assertNotIn("Authorization", captured["headers"])
+            self.assertIn("/states/all?", captured["url"])
+        finally:
+            web_api.http_get_json = original_get
+            web_api.http_post_form_json = original_post
+            web_api.OPENSKY_TOKEN_CACHE.clear()
+
+    def test_opensky_fetch_uses_bearer_token_with_credentials(self):
+        captured_posts = []
+        captured_gets = []
+        original_get = web_api.http_get_json
+        original_post = web_api.http_post_form_json
+        try:
+            web_api.OPENSKY_TOKEN_CACHE.clear()
+
+            def fake_post(url, form, headers=None, timeout=15):
+                captured_posts.append((url, dict(form)))
+                return {"access_token": "token-123", "expires_in": 1800}
+
+            def fake_get(url, headers=None, timeout=15):
+                captured_gets.append((url, headers or {}))
+                return {"time": 1_700_000_000, "states": []}
+
+            web_api.http_post_form_json = fake_post
+            web_api.http_get_json = fake_get
+            with temporary_env(
+                SHM_OPENSKY_CLIENT_ID="client-id",
+                SHM_OPENSKY_CLIENT_SECRET="client-secret",
+                SHM_OPENSKY_TOKEN_URL="https://auth.example/token",
+            ):
+                query = {"lamin": ["30"], "lomin": ["-91"], "lamax": ["31"], "lomax": ["-90"]}
+                web_api.fetch_opensky(query)
+                web_api.fetch_opensky(query)
+
+            self.assertEqual(len(captured_posts), 1)
+            self.assertEqual(captured_posts[0][0], "https://auth.example/token")
+            self.assertEqual(captured_posts[0][1]["grant_type"], "client_credentials")
+            self.assertEqual(captured_posts[0][1]["client_id"], "client-id")
+            self.assertEqual(captured_posts[0][1]["client_secret"], "client-secret")
+            self.assertEqual(captured_gets[0][1]["Authorization"], "Bearer token-123")
+            self.assertEqual(captured_gets[1][1]["Authorization"], "Bearer token-123")
+        finally:
+            web_api.http_get_json = original_get
+            web_api.http_post_form_json = original_post
+            web_api.OPENSKY_TOKEN_CACHE.clear()
+
+    def test_opensky_token_cache_refreshes_after_expiry(self):
+        cache = web_api.OpenSkyTokenCache()
+        tokens = iter(["first-token", "second-token"])
+        original_post = web_api.http_post_form_json
+        try:
+            calls = []
+
+            def fake_post(url, form, headers=None, timeout=15):
+                calls.append(url)
+                return {"access_token": next(tokens), "expires_in": 120}
+
+            web_api.http_post_form_json = fake_post
+            with temporary_env(
+                SHM_OPENSKY_CLIENT_ID="client-id",
+                SHM_OPENSKY_CLIENT_SECRET="client-secret",
+                SHM_OPENSKY_TOKEN_URL="https://auth.example/token",
+            ):
+                self.assertEqual(cache.get_token(now=1000), "first-token")
+                self.assertEqual(cache.get_token(now=1059), "first-token")
+                self.assertEqual(cache.get_token(now=1061), "second-token")
+
+            self.assertEqual(len(calls), 2)
+        finally:
+            web_api.http_post_form_json = original_post
+
+    def test_opensky_token_uses_default_endpoint(self):
+        cache = web_api.OpenSkyTokenCache()
+        original_post = web_api.http_post_form_json
+        try:
+            calls = []
+
+            def fake_post(url, form, headers=None, timeout=15):
+                calls.append(url)
+                return {"access_token": "token-123", "expires_in": 1800}
+
+            web_api.http_post_form_json = fake_post
+            with temporary_env(
+                SHM_OPENSKY_CLIENT_ID="client-id",
+                SHM_OPENSKY_CLIENT_SECRET="client-secret",
+                SHM_OPENSKY_TOKEN_URL=None,
+            ):
+                self.assertEqual(cache.get_token(now=1000), "token-123")
+
+            self.assertEqual(calls, [web_api.OPENSKY_DEFAULT_TOKEN_URL])
+        finally:
+            web_api.http_post_form_json = original_post
+
+    def test_opensky_partial_credentials_raise_runtime_error(self):
+        cache = web_api.OpenSkyTokenCache()
+        with temporary_env(SHM_OPENSKY_CLIENT_ID="client-id", SHM_OPENSKY_CLIENT_SECRET=""):
+            with self.assertRaises(RuntimeError):
+                cache.get_token()
+        with temporary_env(SHM_OPENSKY_CLIENT_ID="", SHM_OPENSKY_CLIENT_SECRET="client-secret"):
+            with self.assertRaises(RuntimeError):
+                cache.get_token()
+
+    def test_opensky_malformed_token_response_raises_runtime_error(self):
+        cache = web_api.OpenSkyTokenCache()
+        original_post = web_api.http_post_form_json
+        try:
+            web_api.http_post_form_json = lambda *_args, **_kwargs: ["not", "an", "object"]
+            with temporary_env(SHM_OPENSKY_CLIENT_ID="client-id", SHM_OPENSKY_CLIENT_SECRET="client-secret"):
+                with self.assertRaises(RuntimeError):
+                    cache.get_token()
+
+            web_api.http_post_form_json = lambda *_args, **_kwargs: {"expires_in": 1800}
+            with temporary_env(SHM_OPENSKY_CLIENT_ID="client-id", SHM_OPENSKY_CLIENT_SECRET="client-secret"):
+                with self.assertRaises(RuntimeError):
+                    cache.get_token()
+
+            web_api.http_post_form_json = lambda *_args, **_kwargs: {"access_token": "token-123", "expires_in": "bad"}
+            with temporary_env(SHM_OPENSKY_CLIENT_ID="client-id", SHM_OPENSKY_CLIENT_SECRET="client-secret"):
+                self.assertEqual(cache.get_token(now=1000), "token-123")
+                self.assertEqual(cache.get_token(now=2000), "token-123")
+        finally:
+            web_api.http_post_form_json = original_post
+
+    def test_opensky_token_url_and_upstream_errors_do_not_become_value_errors(self):
+        cache = web_api.OpenSkyTokenCache()
+        with temporary_env(
+            SHM_OPENSKY_CLIENT_ID="client-id",
+            SHM_OPENSKY_CLIENT_SECRET="client-secret",
+            SHM_OPENSKY_TOKEN_URL="not-a-url",
+        ):
+            with self.assertRaises(RuntimeError):
+                cache.get_token()
+
+        original_post = web_api.http_post_form_json
+        try:
+            web_api.http_post_form_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                web_api.urlerror.URLError("unavailable")
+            )
+            with temporary_env(SHM_OPENSKY_CLIENT_ID="client-id", SHM_OPENSKY_CLIENT_SECRET="client-secret"):
+                with self.assertRaises(web_api.urlerror.URLError):
+                    cache.get_token()
+        finally:
+            web_api.http_post_form_json = original_post
 
 
 if __name__ == "__main__":

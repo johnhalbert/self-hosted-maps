@@ -36,6 +36,9 @@ DISPLAY_BOUNDARY_INDEX_NAME = "us-state-display-boundary-index.json"
 DISPLAY_BOUNDARY_INDEX_ENV = "SHM_DISPLAY_BOUNDARY_INDEX_FILE"
 JOBS_DIR = LOG_ROOT / "api-jobs"
 JSON_FILE_CACHE = {}
+OPENSKY_DEFAULT_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+OPENSKY_TOKEN_REFRESH_SKEW_SECONDS = 60
+OPENSKY_TOKEN_FALLBACK_EXPIRES_SECONDS = 1500
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -604,6 +607,21 @@ def http_get_json(url: str, headers=None, timeout: int = 15):
         return json.loads(response.read().decode("utf-8"))
 
 
+def http_post_form_json(url: str, form, headers=None, timeout: int = 15):
+    request_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        **(headers or {}),
+    }
+    body = urlparse.urlencode(form).encode("utf-8")
+    request = urlrequest.Request(url, data=body, headers=request_headers, method="POST")
+    with urlrequest.urlopen(request, timeout=timeout) as response:
+        try:
+            return json.loads(response.read().decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("OpenSky token response was not valid JSON.") from exc
+
+
 def geocode_query(query: str):
     if not env_bool("SHM_ADDRESS_SEARCH_ENABLED", True):
         raise RuntimeError("Address search is disabled.")
@@ -766,6 +784,70 @@ def build_label_full(callsign, craft_number, display_id):
     if callsign and secondary and callsign != secondary:
         return f"{callsign} • {secondary}"
     return primary
+
+
+class OpenSkyTokenCache:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._token = None
+        self._refresh_after = 0
+        self._cache_key = None
+
+    def clear(self):
+        with self._lock:
+            self._token = None
+            self._refresh_after = 0
+            self._cache_key = None
+
+    def get_token(self, now=None):
+        client_id = os.environ.get("SHM_OPENSKY_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("SHM_OPENSKY_CLIENT_SECRET", "").strip()
+        if not client_id and not client_secret:
+            return None
+        if not client_id or not client_secret:
+            raise RuntimeError("OpenSky OAuth credentials are incomplete.")
+
+        token_url = os.environ.get("SHM_OPENSKY_TOKEN_URL", OPENSKY_DEFAULT_TOKEN_URL).strip()
+        token_url = token_url or OPENSKY_DEFAULT_TOKEN_URL
+        now = float(time.time() if now is None else now)
+        cache_key = (client_id, client_secret, token_url)
+        with self._lock:
+            if self._token and self._cache_key == cache_key and now < self._refresh_after:
+                return self._token
+            token_response = self._request_token(token_url, client_id, client_secret)
+            token = clean_text(token_response.get("access_token"))
+            if not token:
+                raise RuntimeError("OpenSky token response did not include an access token.")
+            expires_seconds = maybe_float(token_response.get("expires_in"))
+            if expires_seconds is None or expires_seconds <= 0:
+                expires_seconds = OPENSKY_TOKEN_FALLBACK_EXPIRES_SECONDS
+            refresh_skew = min(OPENSKY_TOKEN_REFRESH_SKEW_SECONDS, max(0, expires_seconds / 2))
+            self._token = token
+            self._refresh_after = now + max(1, expires_seconds - refresh_skew)
+            self._cache_key = cache_key
+            return self._token
+
+    def _request_token(self, token_url, client_id, client_secret):
+        try:
+            token_response = http_post_form_json(
+                token_url,
+                {
+                    "grant_type": "client_credentials",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                },
+                timeout=15,
+            )
+        except (urlerror.HTTPError, urlerror.URLError):
+            raise
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Unable to fetch OpenSky OAuth token.") from exc
+        if not isinstance(token_response, dict):
+            raise RuntimeError("OpenSky token response was not a JSON object.")
+        return token_response
+
+
+OPENSKY_TOKEN_CACHE = OpenSkyTokenCache()
 
 
 def require_flight_provider_key(value):
@@ -1045,7 +1127,11 @@ def fetch_opensky(query):
         f"&lamax={lamax:.6f}&lomax={lomax:.6f}"
     )
     generation = FLIGHT_SNAPSHOT_CACHE.begin_request("opensky")
-    payload = http_get_json(url, headers={"User-Agent": "self-hosted-maps/1.0"}, timeout=15)
+    headers = {"User-Agent": "self-hosted-maps/1.0"}
+    token = OPENSKY_TOKEN_CACHE.get_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    payload = http_get_json(url, headers=headers, timeout=15)
     fetched_at_ms = current_time_ms()
     feature_collection, detail_entries = normalize_opensky(payload, fetched_at_ms=fetched_at_ms)
     FLIGHT_SNAPSHOT_CACHE.commit("opensky", generation, fetched_at_ms, detail_entries)
