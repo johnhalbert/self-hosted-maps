@@ -4,26 +4,85 @@ const fallbackView = {
   bounds: null
 };
 
+const FLIGHT_SELECTED_SOURCE_ID = "selected-flight";
+const FLIGHT_SELECTED_LAYER_ID = "selected-flight-halo";
+const FLIGHT_ANIMATION_WINDOW_MS = 900;
+const FLIGHT_MAX_PROJECTION_MS = 10000;
+const FLIGHT_STALE_GRACE_MS = 20000;
+const FLIGHT_RENDER_INTERVAL_MS = 1000 / 10;
+const FLIGHT_MAX_ANIMATED_FEATURES = 200;
+const FLIGHT_PROVIDER_ALIASES = {
+  opensky: "opensky",
+  adsbx: "adsbx",
+  adsbexchange: "adsbx"
+};
+const FLIGHT_ICON_SVGS = {
+  opensky: `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <path
+        fill="#f97316"
+        stroke="#ffffff"
+        stroke-width="0.9"
+        stroke-linejoin="round"
+        d="M21.44 10.05L13.5 12.18V8.1l3.2-2.28V4.2l-4.7 1.6L9.3 4.2v1.62L12.5 8.1v4.08l-7.94-2.13L3 11.61l9.5 5.16v3.12L10.3 21v1.2l1.7-.42L13.7 22v-1.2l-1.2-1.11v-3.12L22 11.61z"
+      />
+    </svg>
+  `,
+  adsbx: `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <path
+        fill="#7c3aed"
+        stroke="#ffffff"
+        stroke-width="0.9"
+        stroke-linejoin="round"
+        d="M12 2.8l2.2 5.3 7 4.3-5.7 1.4 1.9 7.4-5.4-3.5-5.4 3.5 1.9-7.4-5.7-1.4 7-4.3z"
+      />
+    </svg>
+  `
+};
+
 const flightProviders = {
   opensky: {
     buttonId: "toggleOpenSky",
     sourceId: "opensky-flights",
-    layerId: "opensky-flight-points",
+    layerId: "opensky-flight-symbols",
+    hitLayerId: "opensky-flight-hit",
+    iconImageId: "flight-icon-opensky",
     color: "#f97316",
     minZoom: 4,
+    labelPrimaryMinZoom: 6,
+    labelFullMinZoom: 8,
     label: "OpenSky",
     capabilityKey: "openSkyEnabled"
   },
   adsbx: {
     buttonId: "toggleAdsbx",
     sourceId: "adsbx-flights",
-    layerId: "adsbx-flight-points",
+    layerId: "adsbx-flight-symbols",
+    hitLayerId: "adsbx-flight-hit",
+    iconImageId: "flight-icon-adsbx",
     color: "#7c3aed",
     minZoom: 6,
+    labelPrimaryMinZoom: 8,
+    labelFullMinZoom: 10,
     label: "ADS-B Exchange",
     capabilityKey: "adsbExchangeEnabled"
   }
 };
+
+function createFlightProviderRuntime() {
+  return {
+    tracks: new Map(),
+    requestSeq: 0,
+    abortController: null,
+    lastSuccessAtMs: 0,
+    lastQueryFootprint: null
+  };
+}
+
+function reducedMotionEnabled() {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 const appState = {
   map: null,
@@ -43,10 +102,20 @@ const appState = {
   currentJob: null,
   jobPollHandle: null,
   flightTimers: {},
+  flightRuntime: {
+    opensky: createFlightProviderRuntime(),
+    adsbx: createFlightProviderRuntime()
+  },
   flightsEnabled: {
     opensky: false,
     adsbx: false
   },
+  flightAnimationFrame: null,
+  lastFlightRenderAtMs: 0,
+  selectedFlight: null,
+  flightPopup: null,
+  suppressFlightPopupClose: false,
+  prefersReducedMotion: reducedMotionEnabled(),
   flightMenuOpen: false,
   flightMenuPinned: false,
   flightMenuIgnoreNextFocusOpen: false,
@@ -519,7 +588,90 @@ async function loadTileJsonView(tilejsonUrl) {
   }
 }
 
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function toFiniteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeFlightProviderKey(value) {
+  return FLIGHT_PROVIDER_ALIASES[String(value || "").trim().toLowerCase()] || "";
+}
+
+function normalizeFlightRecordKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function buildFlightEntityKey(providerKey, recordKey) {
+  return providerKey && recordKey ? `${providerKey}:${recordKey}` : "";
+}
+
+function svgMarkupToImageData(svgMarkup, size = 96) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext("2d");
+      context.clearRect(0, 0, size, size);
+      context.drawImage(img, 0, 0, size, size);
+      resolve(context.getImageData(0, 0, size, size));
+    };
+    img.onerror = () => reject(new Error("Unable to create aircraft icon."));
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgMarkup.trim())}`;
+  });
+}
+
+async function registerFlightImages() {
+  if (!appState.map) {
+    return;
+  }
+  await Promise.all(
+    Object.entries(flightProviders).map(async ([providerKey, provider]) => {
+      if (appState.map.hasImage(provider.iconImageId)) {
+        return;
+      }
+      const imageData = await svgMarkupToImageData(FLIGHT_ICON_SVGS[providerKey]);
+      appState.map.addImage(provider.iconImageId, imageData, { pixelRatio: 2 });
+    })
+  );
+}
+
+function setFlightSourceData(providerKey, featureCollection) {
+  const provider = flightProviders[providerKey];
+  const source = appState.map?.getSource(provider.sourceId);
+  if (source) {
+    source.setData(featureCollection);
+  }
+}
+
+function setSelectedFlightSource(featureCollection) {
+  const source = appState.map?.getSource(FLIGHT_SELECTED_SOURCE_ID);
+  if (source) {
+    source.setData(featureCollection);
+  }
+}
+
+function selectedFlightFeature(lngLat, selectedFlight) {
+  return {
+    type: "Feature",
+    geometry: { type: "Point", coordinates: lngLat },
+    properties: {
+      providerColor: flightProviders[selectedFlight.providerKey]?.color || "#2563eb",
+      status: selectedFlight.status || "tracked"
+    }
+  };
+}
+
 function ensureFlightLayers() {
+  if (!appState.map) {
+    return;
+  }
+
   Object.values(flightProviders).forEach((provider) => {
     if (!appState.map.getSource(provider.sourceId)) {
       appState.map.addSource(provider.sourceId, {
@@ -527,9 +679,44 @@ function ensureFlightLayers() {
         data: emptyFeatureCollection()
       });
     }
-    if (!appState.map.getLayer(provider.layerId)) {
+  });
+
+  if (!appState.map.getSource(FLIGHT_SELECTED_SOURCE_ID)) {
+    appState.map.addSource(FLIGHT_SELECTED_SOURCE_ID, {
+      type: "geojson",
+      data: emptyFeatureCollection()
+    });
+  }
+
+  if (!appState.map.getLayer(FLIGHT_SELECTED_LAYER_ID)) {
+    appState.map.addLayer({
+      id: FLIGHT_SELECTED_LAYER_ID,
+      type: "circle",
+      source: FLIGHT_SELECTED_SOURCE_ID,
+      paint: {
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          4,
+          10,
+          8,
+          13,
+          12,
+          17
+        ],
+        "circle-color": ["coalesce", ["get", "providerColor"], "#2563eb"],
+        "circle-opacity": 0.22,
+        "circle-stroke-color": ["coalesce", ["get", "providerColor"], "#2563eb"],
+        "circle-stroke-width": 2
+      }
+    });
+  }
+
+  Object.values(flightProviders).forEach((provider) => {
+    if (!appState.map.getLayer(provider.hitLayerId)) {
       appState.map.addLayer({
-        id: provider.layerId,
+        id: provider.hitLayerId,
         type: "circle",
         source: provider.sourceId,
         paint: {
@@ -537,29 +724,60 @@ function ensureFlightLayers() {
             "interpolate",
             ["linear"],
             ["zoom"],
-            4,
-            3,
-            8,
-            5,
+            provider.minZoom,
+            10,
             12,
-            7
+            16
           ],
-          "circle-color": provider.color,
-          "circle-opacity": 0.85,
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 1
+          "circle-opacity": 0.01
+        }
+      });
+    }
+    if (!appState.map.getLayer(provider.layerId)) {
+      appState.map.addLayer({
+        id: provider.layerId,
+        type: "symbol",
+        source: provider.sourceId,
+        layout: {
+          "icon-image": provider.iconImageId,
+          "icon-size": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            provider.minZoom,
+            0.42,
+            10,
+            0.55,
+            13,
+            0.68
+          ],
+          "icon-rotate": ["coalesce", ["get", "headingDeg"], 0],
+          "icon-rotation-alignment": "map",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+          "text-field": [
+            "step",
+            ["zoom"],
+            "",
+            provider.labelPrimaryMinZoom,
+            ["coalesce", ["get", "labelPrimary"], ""],
+            provider.labelFullMinZoom,
+            ["coalesce", ["get", "labelFull"], ["get", "labelPrimary"], ""]
+          ],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": 11,
+          "text-anchor": "left",
+          "text-offset": [1.15, 0],
+          "text-optional": true
+        },
+        paint: {
+          "text-color": "#111827",
+          "text-halo-color": "rgba(255, 255, 255, 0.96)",
+          "text-halo-width": 1.4
         }
       });
     }
   });
-}
-
-function setFlightData(providerKey, featureCollection) {
-  const provider = flightProviders[providerKey];
-  const source = appState.map.getSource(provider.sourceId);
-  if (source) {
-    source.setData(featureCollection);
-  }
 }
 
 function flightMenuElements() {
@@ -647,6 +865,731 @@ function updateFlightButtons() {
   syncFlightMenuState();
 }
 
+function buildFlightRequest(providerKey) {
+  if (providerKey === "opensky") {
+    const query = currentBoundsQuery();
+    return {
+      url: `/api/flights/opensky?${new URLSearchParams(query).toString()}`,
+      footprint: {
+        type: "bbox",
+        south: query.lamin,
+        west: query.lomin,
+        north: query.lamax,
+        east: query.lomax
+      }
+    };
+  }
+  const query = currentAdsbQuery();
+  return {
+    url: `/api/flights/adsbx?${new URLSearchParams(query).toString()}`,
+    footprint: {
+      type: "radius",
+      lat: query.lat,
+      lng: query.lng,
+      distNm: query.dist
+    }
+  };
+}
+
+function queryFootprintContains(footprint, lngLat) {
+  if (!footprint || !Array.isArray(lngLat) || lngLat.length !== 2) {
+    return true;
+  }
+  const [lng, lat] = lngLat;
+  if (footprint.type === "bbox") {
+    return (
+      lng >= footprint.west &&
+      lng <= footprint.east &&
+      lat >= footprint.south &&
+      lat <= footprint.north
+    );
+  }
+  if (footprint.type === "radius") {
+    return distanceNm(lat, lng, footprint.lat, footprint.lng) <= footprint.distNm;
+  }
+  return true;
+}
+
+function radians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function degrees(value) {
+  return (value * 180) / Math.PI;
+}
+
+function projectLngLat(lngLat, headingDeg, distanceMeters) {
+  const [lng, lat] = lngLat;
+  const angularDistance = distanceMeters / 6378137;
+  const heading = radians(headingDeg);
+  const lat1 = radians(lat);
+  const lng1 = radians(lng);
+  const sinLat1 = Math.sin(lat1);
+  const cosLat1 = Math.cos(lat1);
+  const sinAngular = Math.sin(angularDistance);
+  const cosAngular = Math.cos(angularDistance);
+  const sinLat2 = sinLat1 * cosAngular + cosLat1 * sinAngular * Math.cos(heading);
+  const lat2 = Math.asin(clamp(sinLat2, -1, 1));
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(heading) * sinAngular * cosLat1,
+      cosAngular - sinLat1 * Math.sin(lat2)
+    );
+  return [((degrees(lng2) + 540) % 360) - 180, degrees(lat2)];
+}
+
+function easeOutCubic(value) {
+  return 1 - Math.pow(1 - value, 3);
+}
+
+function interpolateLngLat(fromLngLat, toLngLat, factor) {
+  return [
+    fromLngLat[0] + (toLngLat[0] - fromLngLat[0]) * factor,
+    fromLngLat[1] + (toLngLat[1] - fromLngLat[1]) * factor
+  ];
+}
+
+function canProjectTrack(track) {
+  return (
+    track.status === "tracked" &&
+    !track.properties.onGround &&
+    Number.isFinite(track.properties.groundSpeedMps) &&
+    Number.isFinite(track.properties.headingDeg) &&
+    Number.isFinite(track.properties.positionAgeMsAtFetch)
+  );
+}
+
+function computeTrackTargetLngLat(track, nowMs) {
+  if (!canProjectTrack(track)) {
+    return track.reportedLngLat;
+  }
+  const elapsedMs = clamp(
+    (track.properties.positionAgeMsAtFetch || 0) + (nowMs - track.fetchedAtMs),
+    0,
+    FLIGHT_MAX_PROJECTION_MS
+  );
+  const distanceMeters = track.properties.groundSpeedMps * (elapsedMs / 1000);
+  return projectLngLat(track.reportedLngLat, track.properties.headingDeg, distanceMeters);
+}
+
+function computeTrackDisplayedLngLat(track, nowMs, allowAnimation) {
+  if (!track) {
+    return null;
+  }
+  if (!allowAnimation || appState.prefersReducedMotion || track.status !== "tracked") {
+    return track.displayedLngLat || track.reportedLngLat;
+  }
+  const target = computeTrackTargetLngLat(track, nowMs);
+  if (!Array.isArray(track.animationFromLngLat)) {
+    return target;
+  }
+  const elapsedMs = nowMs - track.transitionStartedAtMs;
+  if (elapsedMs >= FLIGHT_ANIMATION_WINDOW_MS) {
+    return target;
+  }
+  const progress = easeOutCubic(clamp(elapsedMs / FLIGHT_ANIMATION_WINDOW_MS, 0, 1));
+  return interpolateLngLat(track.animationFromLngLat, target, progress);
+}
+
+function currentDisplayedLngLat(track, nowMs, allowAnimation) {
+  const lngLat = computeTrackDisplayedLngLat(track, nowMs, allowAnimation);
+  if (lngLat) {
+    track.displayedLngLat = lngLat;
+  }
+  return lngLat;
+}
+
+function createFlightTrack(providerKey, feature, fetchedAtMs, previousTrack, nowMs) {
+  if (!feature || feature.type !== "Feature") {
+    return null;
+  }
+  const coordinates = feature.geometry?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length < 2) {
+    return null;
+  }
+  const lng = toFiniteNumber(coordinates[0]);
+  const lat = toFiniteNumber(coordinates[1]);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+    return null;
+  }
+  const properties = feature.properties || {};
+  const recordKey = normalizeFlightRecordKey(properties.recordKey || properties.id);
+  if (!recordKey) {
+    return null;
+  }
+  const entityKey = buildFlightEntityKey(providerKey, recordKey);
+  const previousLngLat = previousTrack
+    ? currentDisplayedLngLat(previousTrack, nowMs, !appState.prefersReducedMotion)
+    : [lng, lat];
+  return {
+    providerKey,
+    recordKey,
+    entityKey,
+    featureId: feature.id || entityKey,
+    reportedLngLat: [lng, lat],
+    displayedLngLat: previousLngLat,
+    animationFromLngLat: previousLngLat,
+    transitionStartedAtMs: fetchedAtMs,
+    fetchedAtMs,
+    status: "tracked",
+    missingSinceMs: null,
+    missingInCoverageCount: 0,
+    properties: {
+      ...properties,
+      providerKey,
+      recordKey,
+      entityKey,
+      displayId: properties.displayId || recordKey.toUpperCase()
+    }
+  };
+}
+
+function buildSourceFeatureFromTrack(track, nowMs, allowAnimation) {
+  const coordinates = currentDisplayedLngLat(track, nowMs, allowAnimation);
+  return {
+    type: "Feature",
+    id: track.featureId,
+    geometry: { type: "Point", coordinates },
+    properties: track.properties
+  };
+}
+
+function renderFlightProvider(providerKey, nowMs = Date.now()) {
+  const runtime = appState.flightRuntime[providerKey];
+  const animateProvider =
+    !appState.prefersReducedMotion && runtime.tracks.size <= FLIGHT_MAX_ANIMATED_FEATURES;
+  const features = [];
+  runtime.tracks.forEach((track) => {
+    features.push(buildSourceFeatureFromTrack(track, nowMs, animateProvider));
+  });
+  setFlightSourceData(providerKey, {
+    type: "FeatureCollection",
+    features,
+    meta: {
+      providerKey,
+      fetchedAtMs: runtime.lastSuccessAtMs
+    }
+  });
+}
+
+function selectedTrack() {
+  if (!appState.selectedFlight) {
+    return null;
+  }
+  return appState.flightRuntime[appState.selectedFlight.providerKey]?.tracks.get(
+    appState.selectedFlight.entityKey
+  );
+}
+
+function selectedLngLat(nowMs = Date.now()) {
+  if (!appState.selectedFlight) {
+    return null;
+  }
+  const track = selectedTrack();
+  if (track) {
+    const lngLat = currentDisplayedLngLat(track, nowMs, !appState.prefersReducedMotion);
+    appState.selectedFlight.lastKnownLngLat = lngLat;
+    appState.selectedFlight.summary = { ...track.properties };
+    appState.selectedFlight.status = track.status;
+    return lngLat;
+  }
+  return appState.selectedFlight.lastKnownLngLat;
+}
+
+function updateSelectedFlightSource(nowMs = Date.now()) {
+  if (!appState.selectedFlight) {
+    setSelectedFlightSource(emptyFeatureCollection());
+    return;
+  }
+  const lngLat = selectedLngLat(nowMs);
+  if (!lngLat) {
+    setSelectedFlightSource(emptyFeatureCollection());
+    return;
+  }
+  setSelectedFlightSource({
+    type: "FeatureCollection",
+    features: [selectedFlightFeature(lngLat, appState.selectedFlight)]
+  });
+  if (appState.flightPopup?.isOpen()) {
+    appState.flightPopup.setLngLat(lngLat);
+  }
+}
+
+function formatFlightValue(value, digits = 0) {
+  const number = toFiniteNumber(value);
+  if (number === null) {
+    return null;
+  }
+  return digits > 0 ? number.toFixed(digits) : Math.round(number).toString();
+}
+
+function formatFlightAge(valueMs) {
+  const number = toFiniteNumber(valueMs);
+  if (number === null) {
+    return null;
+  }
+  if (number < 1000) {
+    return `${Math.round(number)} ms`;
+  }
+  return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)} s`;
+}
+
+function popupRow(label, value, options = {}) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const row = document.createElement("div");
+  row.className = "flight-popup-row";
+  const term = document.createElement("span");
+  term.className = "flight-popup-term";
+  term.textContent = label;
+  const description = document.createElement("span");
+  description.className = "flight-popup-value";
+  if (options.tone) {
+    description.dataset.tone = options.tone;
+  }
+  description.textContent = value;
+  row.append(term, description);
+  return row;
+}
+
+function ensureFlightPopup() {
+  if (appState.flightPopup) {
+    return appState.flightPopup;
+  }
+  appState.flightPopup = new maplibregl.Popup({
+    closeOnClick: false,
+    className: "flight-popup",
+    maxWidth: "360px"
+  });
+  appState.flightPopup.on("close", () => {
+    if (appState.suppressFlightPopupClose) {
+      appState.suppressFlightPopupClose = false;
+      return;
+    }
+    clearSelectedFlight();
+  });
+  return appState.flightPopup;
+}
+
+function buildFlightPopupContent(selectedFlight) {
+  const summary = selectedFlight.detail?.summary || selectedFlight.summary || {};
+  const liveLngLat = Array.isArray(selectedFlight.lastKnownLngLat) ? selectedFlight.lastKnownLngLat : null;
+  const wrapper = document.createElement("div");
+  wrapper.className = "flight-popup-card";
+
+  const header = document.createElement("div");
+  header.className = "flight-popup-header";
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "flight-popup-title";
+  const title = document.createElement("strong");
+  title.textContent =
+    summary.labelPrimary || summary.labelFull || summary.callsign || summary.displayId || "Aircraft";
+  const subtitle = document.createElement("span");
+  subtitle.textContent =
+    summary.providerLabel || flightProviders[selectedFlight.providerKey]?.label || selectedFlight.providerKey;
+  titleWrap.append(title, subtitle);
+  const status = document.createElement("span");
+  status.className = "flight-popup-status";
+  status.dataset.state = selectedFlight.status || "tracked";
+  status.textContent =
+    selectedFlight.status === "outside-query"
+      ? "Outside active query"
+      : selectedFlight.status === "stale"
+        ? "Waiting for refresh"
+        : "Live";
+  header.append(titleWrap, status);
+  wrapper.append(header);
+
+  const grid = document.createElement("div");
+  grid.className = "flight-popup-grid";
+  const rows = [
+    popupRow("Flight", summary.flightNumber || summary.callsign),
+    popupRow("Craft", summary.craftNumber || summary.registration || summary.displayId),
+    popupRow("Type", summary.aircraftType),
+    popupRow("Origin", summary.originCountry),
+    popupRow("Squawk", summary.squawk),
+    popupRow(
+      "Altitude",
+      summary.baroAltitudeFt != null
+        ? `${formatFlightValue(summary.baroAltitudeFt)} ft`
+        : summary.baroAltitude != null
+          ? String(summary.baroAltitude)
+          : null
+    ),
+    popupRow(
+      "Ground speed",
+      summary.groundSpeedKts != null
+        ? `${formatFlightValue(summary.groundSpeedKts)} kt`
+        : summary.groundSpeedMps != null
+          ? `${formatFlightValue(summary.groundSpeedMps)} m/s`
+          : null
+    ),
+    popupRow(
+      "Heading",
+      summary.headingDeg != null ? `${formatFlightValue(summary.headingDeg)} deg` : null
+    ),
+    popupRow(
+      "Vertical rate",
+      summary.verticalRateMps != null ? `${formatFlightValue(summary.verticalRateMps, 2)} m/s` : null
+    ),
+    popupRow("Position age", formatFlightAge(summary.positionAgeMsAtFetch)),
+    popupRow("Last contact", formatFlightAge(summary.contactAgeMsAtFetch)),
+    popupRow(
+      "Coordinates",
+      summary.latitude != null && summary.longitude != null
+        ? `${formatFlightValue(summary.latitude, 4)}, ${formatFlightValue(summary.longitude, 4)}`
+        : liveLngLat
+          ? `${formatFlightValue(liveLngLat[1], 4)}, ${formatFlightValue(liveLngLat[0], 4)}`
+        : null
+    )
+  ].filter(Boolean);
+  rows.forEach((row) => grid.append(row));
+  wrapper.append(grid);
+
+  const detailState = document.createElement("div");
+  detailState.className = "flight-popup-detail-state";
+  if (selectedFlight.detailLoading) {
+    detailState.textContent = "Loading expanded detail...";
+  } else if (selectedFlight.detailUnavailable) {
+    detailState.textContent = selectedFlight.detailUnavailable;
+    detailState.dataset.tone = "warn";
+  }
+  if (detailState.textContent) {
+    wrapper.append(detailState);
+  }
+
+  if (selectedFlight.detail?.raw) {
+    const details = document.createElement("details");
+    details.className = "flight-popup-raw";
+    const summaryNode = document.createElement("summary");
+    summaryNode.textContent = "All API fields";
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(selectedFlight.detail.raw, null, 2);
+    details.append(summaryNode, pre);
+    wrapper.append(details);
+  }
+
+  return wrapper;
+}
+
+function renderSelectedFlightPopup() {
+  if (!appState.selectedFlight || !appState.map) {
+    return;
+  }
+  const popup = ensureFlightPopup();
+  popup.setDOMContent(buildFlightPopupContent(appState.selectedFlight));
+  const lngLat = selectedLngLat(Date.now());
+  if (lngLat) {
+    popup.setLngLat(lngLat);
+  }
+  if (!popup.isOpen()) {
+    popup.addTo(appState.map);
+  }
+  updateSelectedFlightSource();
+}
+
+function clearSelectedFlight(options = {}) {
+  const previousSelection = appState.selectedFlight;
+  if (!previousSelection) {
+    setSelectedFlightSource(emptyFeatureCollection());
+    return;
+  }
+  previousSelection.detailAbortController?.abort();
+  appState.selectedFlight = null;
+  setSelectedFlightSource(emptyFeatureCollection());
+  if (appState.flightPopup?.isOpen()) {
+    appState.suppressFlightPopupClose = true;
+    appState.flightPopup.remove();
+  }
+  if (previousSelection.providerKey) {
+    const runtime = appState.flightRuntime[previousSelection.providerKey];
+    if (runtime?.tracks.has(previousSelection.entityKey)) {
+      const track = runtime.tracks.get(previousSelection.entityKey);
+      if (track && track.status !== "tracked") {
+        runtime.tracks.delete(previousSelection.entityKey);
+        renderFlightProvider(previousSelection.providerKey);
+      }
+    }
+  }
+  if (options.refreshProvider && previousSelection.providerKey) {
+    renderFlightProvider(previousSelection.providerKey);
+  }
+}
+
+function requestSelectedFlightDetail(force = false) {
+  const selected = appState.selectedFlight;
+  if (!selected?.recordKey) {
+    return;
+  }
+  const track = selectedTrack();
+  const requiredFreshness = track?.fetchedAtMs || 0;
+  if (!force && selected.detail && selected.detail.fetchedAtMs >= requiredFreshness) {
+    return;
+  }
+  selected.detailAbortController?.abort();
+  selected.detailRequestSeq = (selected.detailRequestSeq || 0) + 1;
+  const requestSeq = selected.detailRequestSeq;
+  const controller = new AbortController();
+  selected.detailAbortController = controller;
+  selected.detailLoading = true;
+  selected.detailUnavailable = null;
+  renderSelectedFlightPopup();
+  const params = new URLSearchParams({
+    providerKey: selected.providerKey,
+    recordKey: selected.recordKey
+  });
+  requestJson(`/api/flights/detail?${params.toString()}`, { signal: controller.signal })
+    .then((detail) => {
+      if (
+        !appState.selectedFlight ||
+        appState.selectedFlight.entityKey !== selected.entityKey ||
+        appState.selectedFlight.detailRequestSeq !== requestSeq
+      ) {
+        return;
+      }
+      appState.selectedFlight.detail = detail;
+      appState.selectedFlight.detailLoading = false;
+      appState.selectedFlight.detailUnavailable = null;
+      renderSelectedFlightPopup();
+    })
+    .catch((error) => {
+      if (error.name === "AbortError") {
+        return;
+      }
+      if (
+        !appState.selectedFlight ||
+        appState.selectedFlight.entityKey !== selected.entityKey ||
+        appState.selectedFlight.detailRequestSeq !== requestSeq
+      ) {
+        return;
+      }
+      appState.selectedFlight.detail = null;
+      appState.selectedFlight.detailLoading = false;
+      appState.selectedFlight.detailUnavailable = error.message;
+      renderSelectedFlightPopup();
+    });
+}
+
+function selectFlightFeature(feature) {
+  const properties = feature?.properties || {};
+  const providerKey = normalizeFlightProviderKey(properties.providerKey || properties.provider);
+  const recordKey = normalizeFlightRecordKey(properties.recordKey || properties.id);
+  if (!providerKey || !recordKey) {
+    return;
+  }
+  const entityKey = buildFlightEntityKey(providerKey, recordKey);
+  const track = appState.flightRuntime[providerKey].tracks.get(entityKey);
+  if (!track) {
+    return;
+  }
+  if (appState.selectedFlight?.entityKey === entityKey) {
+    renderSelectedFlightPopup();
+    requestSelectedFlightDetail();
+    return;
+  }
+  clearSelectedFlight();
+  appState.selectedFlight = {
+    providerKey,
+    recordKey,
+    entityKey,
+    status: "tracked",
+    selectedAtMs: Date.now(),
+    missingSinceMs: null,
+    missingInCoverageCount: 0,
+    lastKnownLngLat: track.displayedLngLat || track.reportedLngLat,
+    summary: { ...track.properties },
+    detail: null,
+    detailLoading: false,
+    detailUnavailable: null,
+    detailRequestSeq: 0,
+    detailAbortController: null
+  };
+  track.status = "tracked";
+  track.missingSinceMs = null;
+  track.missingInCoverageCount = 0;
+  renderSelectedFlightPopup();
+  requestSelectedFlightDetail(true);
+  scheduleFlightAnimation();
+}
+
+function updateSelectedTrackLifecycle(providerKey, queryFootprint, nowMs) {
+  const selected = appState.selectedFlight;
+  if (!selected || selected.providerKey !== providerKey) {
+    return;
+  }
+  const runtime = appState.flightRuntime[providerKey];
+  const track = runtime.tracks.get(selected.entityKey);
+  if (!track) {
+    clearSelectedFlight({ refreshProvider: true });
+    return;
+  }
+  if (track.status === "tracked") {
+    selected.status = "tracked";
+    selected.missingSinceMs = null;
+    selected.missingInCoverageCount = 0;
+    selected.lastKnownLngLat = track.displayedLngLat || track.reportedLngLat;
+    selected.summary = { ...track.properties };
+    if (!selected.detail || selected.detail.fetchedAtMs < track.fetchedAtMs) {
+      requestSelectedFlightDetail();
+    }
+    return;
+  }
+  selected.lastKnownLngLat = track.displayedLngLat || track.reportedLngLat || selected.lastKnownLngLat;
+  selected.status = track.status;
+  selected.summary = { ...track.properties };
+  selected.missingSinceMs = track.missingSinceMs;
+  selected.missingInCoverageCount = track.missingInCoverageCount;
+  const insideCoverage = queryFootprintContains(queryFootprint, selected.lastKnownLngLat);
+  const staleTooLong = selected.missingSinceMs && nowMs - selected.missingSinceMs >= FLIGHT_STALE_GRACE_MS;
+  const disappearedInCoverage = insideCoverage && selected.missingInCoverageCount >= 2;
+  if (staleTooLong || disappearedInCoverage) {
+    runtime.tracks.delete(selected.entityKey);
+    clearSelectedFlight({ refreshProvider: true });
+    return;
+  }
+  renderSelectedFlightPopup();
+}
+
+function ingestFlightResponse(providerKey, featureCollection, queryFootprint) {
+  const runtime = appState.flightRuntime[providerKey];
+  const nowMs = Date.now();
+  const fetchedAtMs =
+    toFiniteNumber(featureCollection?.meta?.fetchedAtMs) || toFiniteNumber(featureCollection?.meta?.fetchedAt) || nowMs;
+  runtime.lastSuccessAtMs = fetchedAtMs;
+  runtime.lastQueryFootprint = queryFootprint;
+
+  runtime.tracks.forEach((track) => {
+    track.seenInSnapshot = false;
+  });
+
+  const features = Array.isArray(featureCollection?.features) ? featureCollection.features : [];
+  features.forEach((feature) => {
+    const nextProviderKey = normalizeFlightProviderKey(
+      feature?.properties?.providerKey || feature?.properties?.provider || providerKey
+    );
+    if (nextProviderKey !== providerKey) {
+      return;
+    }
+    const recordKey = normalizeFlightRecordKey(feature?.properties?.recordKey || feature?.properties?.id);
+    const entityKey = buildFlightEntityKey(providerKey, recordKey);
+    const nextTrack = createFlightTrack(
+      providerKey,
+      feature,
+      fetchedAtMs,
+      runtime.tracks.get(entityKey),
+      nowMs
+    );
+    if (!nextTrack) {
+      return;
+    }
+    nextTrack.seenInSnapshot = true;
+    runtime.tracks.set(entityKey, nextTrack);
+  });
+
+  runtime.tracks.forEach((track, entityKey) => {
+    if (track.seenInSnapshot) {
+      track.status = "tracked";
+      track.missingSinceMs = null;
+      track.missingInCoverageCount = 0;
+      return;
+    }
+    if (appState.selectedFlight?.entityKey === entityKey) {
+      const insideCoverage = queryFootprintContains(queryFootprint, track.displayedLngLat || track.reportedLngLat);
+      track.status = insideCoverage ? "stale" : "outside-query";
+      track.missingSinceMs = track.missingSinceMs || nowMs;
+      if (insideCoverage) {
+        track.missingInCoverageCount = (track.missingInCoverageCount || 0) + 1;
+      }
+      return;
+    }
+    runtime.tracks.delete(entityKey);
+  });
+
+  renderFlightProvider(providerKey, nowMs);
+  updateSelectedTrackLifecycle(providerKey, queryFootprint, nowMs);
+  updateSelectedFlightSource(nowMs);
+  scheduleFlightAnimation();
+}
+
+function clearFlightProviderState(providerKey, options = {}) {
+  const runtime = appState.flightRuntime[providerKey];
+  runtime.abortController?.abort();
+  runtime.abortController = null;
+  runtime.tracks.clear();
+  runtime.lastQueryFootprint = null;
+  setFlightSourceData(providerKey, emptyFeatureCollection());
+  if (appState.selectedFlight?.providerKey === providerKey && options.clearSelection !== false) {
+    clearSelectedFlight();
+  }
+}
+
+function scheduleFlightAnimation() {
+  if (appState.prefersReducedMotion || appState.flightAnimationFrame) {
+    return;
+  }
+  const hasTracks = Object.keys(flightProviders).some(
+    (providerKey) => appState.flightsEnabled[providerKey] && appState.flightRuntime[providerKey].tracks.size
+  );
+  if (!hasTracks && !appState.selectedFlight) {
+    return;
+  }
+  appState.flightAnimationFrame = window.requestAnimationFrame(tickFlightAnimation);
+}
+
+function tickFlightAnimation() {
+  appState.flightAnimationFrame = null;
+  const nowMs = Date.now();
+  if (nowMs - appState.lastFlightRenderAtMs >= FLIGHT_RENDER_INTERVAL_MS) {
+    Object.keys(flightProviders).forEach((providerKey) => {
+      if (appState.flightsEnabled[providerKey]) {
+        renderFlightProvider(providerKey, nowMs);
+      }
+    });
+    appState.lastFlightRenderAtMs = nowMs;
+  }
+  updateSelectedFlightSource(nowMs);
+  const shouldContinue =
+    !appState.prefersReducedMotion &&
+    (Object.keys(flightProviders).some(
+      (providerKey) => appState.flightsEnabled[providerKey] && appState.flightRuntime[providerKey].tracks.size
+    ) ||
+      Boolean(appState.selectedFlight));
+  if (shouldContinue) {
+    appState.flightAnimationFrame = window.requestAnimationFrame(tickFlightAnimation);
+  }
+}
+
+function bindFlightMapInteractions() {
+  const interactionLayers = Object.values(flightProviders).flatMap((provider) => [
+    provider.hitLayerId,
+    provider.layerId
+  ]);
+  appState.map.on("click", (event) => {
+    const features = appState.map.queryRenderedFeatures(event.point, {
+      layers: interactionLayers.filter((layerId) => appState.map.getLayer(layerId))
+    });
+    if (features.length) {
+      selectFlightFeature(features[0]);
+      return;
+    }
+    if (appState.selectedFlight) {
+      clearSelectedFlight();
+    }
+  });
+  Object.values(flightProviders).forEach((provider) => {
+    [provider.hitLayerId, provider.layerId].forEach((layerId) => {
+      appState.map.on("mouseenter", layerId, () => {
+        appState.map.getCanvas().style.cursor = "pointer";
+      });
+      appState.map.on("mouseleave", layerId, () => {
+        appState.map.getCanvas().style.cursor = "";
+      });
+    });
+  });
+}
+
 function currentBoundsQuery() {
   const bounds = appState.map.getBounds();
   return {
@@ -689,27 +1632,38 @@ async function refreshFlights(providerKey, suppressErrors = false) {
   }
 
   const provider = flightProviders[providerKey];
+  const runtime = appState.flightRuntime[providerKey];
   if (appState.map.getZoom() < provider.minZoom) {
-    setFlightData(providerKey, emptyFeatureCollection());
+    clearFlightProviderState(providerKey);
     if (!suppressErrors) {
       showMessage(`Zoom in to load ${providerKey === "opensky" ? "OpenSky" : "ADS-B Exchange"} flights.`, "warn");
     }
     return;
   }
 
+  runtime.abortController?.abort();
+  runtime.requestSeq += 1;
+  const requestSeq = runtime.requestSeq;
+  const controller = new AbortController();
+  runtime.abortController = controller;
+  const request = buildFlightRequest(providerKey);
   try {
-    let url = "";
-    if (providerKey === "opensky") {
-      const query = currentBoundsQuery();
-      url = `/api/flights/opensky?${new URLSearchParams(query).toString()}`;
-    } else {
-      const query = currentAdsbQuery();
-      url = `/api/flights/adsbx?${new URLSearchParams(query).toString()}`;
+    const data = await requestJson(request.url, { signal: controller.signal });
+    if (
+      runtime.requestSeq !== requestSeq ||
+      controller.signal.aborted ||
+      !appState.flightsEnabled[providerKey]
+    ) {
+      return;
     }
-    const data = await requestJson(url);
-    setFlightData(providerKey, data);
+    ingestFlightResponse(providerKey, data, request.footprint);
   } catch (error) {
-    setFlightData(providerKey, emptyFeatureCollection());
+    if (error.name === "AbortError") {
+      return;
+    }
+    if (runtime.lastSuccessAtMs && Date.now() - runtime.lastSuccessAtMs > 45000) {
+      clearFlightProviderState(providerKey);
+    }
     if (!suppressErrors) {
       showMessage(error.message, "warn");
     }
@@ -719,7 +1673,7 @@ async function refreshFlights(providerKey, suppressErrors = false) {
 function stopFlightPolling(providerKey) {
   window.clearInterval(appState.flightTimers[providerKey]);
   appState.flightTimers[providerKey] = null;
-  setFlightData(providerKey, emptyFeatureCollection());
+  clearFlightProviderState(providerKey);
 }
 
 function toggleFlight(providerKey) {
@@ -1135,6 +2089,29 @@ function bindDomEvents() {
       closeFlightMenu();
     }
   });
+  if (typeof window.matchMedia === "function") {
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const handleMotionChange = (event) => {
+      appState.prefersReducedMotion = event.matches;
+      Object.keys(flightProviders).forEach((providerKey) => {
+        if (appState.flightsEnabled[providerKey]) {
+          renderFlightProvider(providerKey, Date.now());
+        }
+      });
+      updateSelectedFlightSource(Date.now());
+      if (appState.prefersReducedMotion && appState.flightAnimationFrame) {
+        window.cancelAnimationFrame(appState.flightAnimationFrame);
+        appState.flightAnimationFrame = null;
+      } else {
+        scheduleFlightAnimation();
+      }
+    };
+    if (typeof motionQuery.addEventListener === "function") {
+      motionQuery.addEventListener("change", handleMotionChange);
+    } else if (typeof motionQuery.addListener === "function") {
+      motionQuery.addListener(handleMotionChange);
+    }
+  }
   syncFlightMenuState();
 }
 
@@ -1150,8 +2127,10 @@ async function initMap() {
     zoom: initialView.zoom
   });
   appState.map.addControl(new maplibregl.NavigationControl(), "top-right");
-  appState.map.on("load", () => {
+  appState.map.on("load", async () => {
+    await registerFlightImages();
     ensureFlightLayers();
+    bindFlightMapInteractions();
     applySelectedAreaOverlay();
     if (currentAreaBounds) {
       appState.map.fitBounds(currentAreaBounds, {

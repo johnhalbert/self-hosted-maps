@@ -644,35 +644,383 @@ def geocode_query(query: str):
     return {"items": results}
 
 
-def normalize_opensky(payload):
+FLIGHT_SNAPSHOT_TTL_MS = 45_000
+PROVIDER_LABELS = {"opensky": "OpenSky", "adsbx": "ADS-B Exchange"}
+OPENSKY_STATE_FIELDS = [
+    "icao24",
+    "callsign",
+    "origin_country",
+    "time_position",
+    "last_contact",
+    "longitude",
+    "latitude",
+    "baro_altitude",
+    "on_ground",
+    "velocity",
+    "true_track",
+    "vertical_rate",
+    "sensors",
+    "geo_altitude",
+    "squawk",
+    "spi",
+    "position_source",
+    "category",
+]
+
+
+def current_time_ms():
+    return int(time.time() * 1000)
+
+
+def sanitize_json_value(value):
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return value
+    if isinstance(value, list):
+        return [sanitize_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): sanitize_json_value(item) for key, item in value.items()}
+    return value
+
+
+def clean_text(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def maybe_float(value):
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def maybe_bool(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(text)
+
+
+def normalize_record_key(value):
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def meters_to_feet(value):
+    number = maybe_float(value)
+    if number is None:
+        return None
+    return round(number * 3.28084, 1)
+
+
+def mps_to_knots(value):
+    number = maybe_float(value)
+    if number is None:
+        return None
+    return round(number * 1.943844, 1)
+
+
+def knots_to_mps(value):
+    number = maybe_float(value)
+    if number is None:
+        return None
+    return round(number * 0.514444, 2)
+
+
+def epoch_seconds_to_ms(value):
+    number = maybe_float(value)
+    if number is None:
+        return None
+    return int(round(number * 1000))
+
+
+def age_at_fetch_ms(fetched_at_ms, timestamp_ms):
+    if timestamp_ms is None:
+        return None
+    return max(0, int(fetched_at_ms - timestamp_ms))
+
+
+def build_label_primary(callsign, craft_number, display_id):
+    return callsign or craft_number or display_id or ""
+
+
+def build_label_full(callsign, craft_number, display_id):
+    primary = build_label_primary(callsign, craft_number, display_id)
+    secondary = craft_number or display_id
+    if callsign and secondary and callsign != secondary:
+        return f"{callsign} • {secondary}"
+    return primary
+
+
+def require_flight_provider_key(value):
+    provider_key = str(value or "").strip().lower()
+    if provider_key not in PROVIDER_LABELS:
+        raise ValueError("providerKey must be one of opensky or adsbx.")
+    return provider_key
+
+
+def build_detail_summary(provider_key, properties, latitude, longitude):
+    return {
+        "providerLabel": PROVIDER_LABELS[provider_key],
+        "labelPrimary": properties.get("labelPrimary"),
+        "labelFull": properties.get("labelFull"),
+        "displayId": properties.get("displayId"),
+        "callsign": properties.get("callsign"),
+        "flightNumber": properties.get("flightNumber"),
+        "craftNumber": properties.get("craftNumber"),
+        "registration": properties.get("registration"),
+        "aircraftType": properties.get("aircraftType"),
+        "originCountry": properties.get("originCountry"),
+        "squawk": properties.get("squawk"),
+        "latitude": latitude,
+        "longitude": longitude,
+        "baroAltitude": properties.get("baroAltitude"),
+        "geoAltitude": properties.get("geoAltitude"),
+        "baroAltitudeFt": properties.get("baroAltitudeFt"),
+        "geoAltitudeFt": properties.get("geoAltitudeFt"),
+        "onGround": properties.get("onGround"),
+        "groundSpeedMps": properties.get("groundSpeedMps"),
+        "groundSpeedKts": properties.get("groundSpeedKts"),
+        "headingDeg": properties.get("headingDeg"),
+        "verticalRateMps": properties.get("verticalRateMps"),
+        "positionTimestampMs": properties.get("positionTimestampMs"),
+        "lastSeenTimestampMs": properties.get("lastSeenTimestampMs"),
+        "positionAgeMsAtFetch": properties.get("positionAgeMsAtFetch"),
+        "contactAgeMsAtFetch": properties.get("contactAgeMsAtFetch"),
+    }
+
+
+def make_feature_collection(provider_key, fetched_at_ms, features):
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "meta": {
+            "providerKey": provider_key,
+            "providerLabel": PROVIDER_LABELS[provider_key],
+            "fetchedAtMs": fetched_at_ms,
+        },
+    }
+
+
+def build_opensky_detail_raw(state, response_time):
+    mapped = {}
+    for index, field in enumerate(OPENSKY_STATE_FIELDS):
+        mapped[field] = sanitize_json_value(state[index]) if index < len(state) else None
+    return {
+        "schema": "opensky.state_vector.v1",
+        "data": {
+            "time": sanitize_json_value(response_time),
+            "state": sanitize_json_value(state),
+        },
+        "mapped": mapped,
+    }
+
+
+def build_adsbx_detail_raw(item, response_now):
+    return {
+        "schema": "adsbx.aircraft.v1",
+        "data": sanitize_json_value(item),
+        "context": {"now": sanitize_json_value(response_now)},
+    }
+
+
+def build_opensky_record(state, fetched_at_ms, response_time):
+    if not isinstance(state, list) or len(state) < 17:
+        return None
+
+    longitude = maybe_float(state[5])
+    latitude = maybe_float(state[6])
+    if latitude is None or longitude is None:
+        return None
+
+    record_key = normalize_record_key(state[0])
+    if not record_key:
+        return None
+
+    callsign = clean_text(state[1])
+    flight_number = callsign
+    craft_number = None
+    display_id = record_key.upper()
+    baro_altitude = maybe_float(state[7])
+    geo_altitude = maybe_float(state[13])
+    on_ground = maybe_bool(state[8])
+    velocity = maybe_float(state[9])
+    track = maybe_float(state[10])
+    vertical_rate = maybe_float(state[11])
+    position_timestamp_ms = epoch_seconds_to_ms(state[3])
+    last_seen_timestamp_ms = epoch_seconds_to_ms(state[4])
+    label_primary = build_label_primary(flight_number, craft_number, display_id)
+    label_full = build_label_full(flight_number, craft_number, display_id)
+    entity_key = f"opensky:{record_key}"
+    properties = {
+        "provider": "opensky",
+        "providerKey": "opensky",
+        "providerLabel": PROVIDER_LABELS["opensky"],
+        "id": state[0],
+        "recordKey": record_key,
+        "entityKey": entity_key,
+        "displayId": display_id,
+        "callsign": callsign,
+        "flightNumber": flight_number,
+        "craftNumber": craft_number,
+        "registration": None,
+        "aircraftType": None,
+        "originCountry": clean_text(state[2]),
+        "baroAltitude": baro_altitude,
+        "baroAltitudeFt": meters_to_feet(baro_altitude),
+        "geoAltitude": geo_altitude,
+        "geoAltitudeFt": meters_to_feet(geo_altitude),
+        "onGround": on_ground,
+        "velocity": velocity,
+        "groundSpeedMps": velocity,
+        "groundSpeedKts": mps_to_knots(velocity),
+        "track": track,
+        "headingDeg": track,
+        "verticalRate": vertical_rate,
+        "verticalRateMps": vertical_rate,
+        "squawk": clean_text(state[14]),
+        "positionTimestampMs": position_timestamp_ms,
+        "lastSeenTimestampMs": last_seen_timestamp_ms,
+        "positionAgeMsAtFetch": age_at_fetch_ms(fetched_at_ms, position_timestamp_ms),
+        "contactAgeMsAtFetch": age_at_fetch_ms(fetched_at_ms, last_seen_timestamp_ms),
+        "labelPrimary": label_primary,
+        "labelFull": label_full,
+        "detailAvailable": True,
+    }
+    feature = {
+        "type": "Feature",
+        "id": entity_key,
+        "geometry": {"type": "Point", "coordinates": [longitude, latitude]},
+        "properties": properties,
+    }
+    detail_entry = {
+        "provider": "opensky",
+        "providerKey": "opensky",
+        "recordKey": record_key,
+        "entityKey": entity_key,
+        "fetchedAtMs": fetched_at_ms,
+        "summary": build_detail_summary("opensky", properties, latitude, longitude),
+        "raw": build_opensky_detail_raw(state, response_time),
+    }
+    return {"feature": feature, "detail": detail_entry, "recordKey": record_key}
+
+
+def build_adsbx_record(item, fetched_at_ms, response_now):
+    if not isinstance(item, dict):
+        return None
+
+    latitude = maybe_float(_pick(item, "lat", "Lat"))
+    longitude = maybe_float(_pick(item, "lon", "Long", "Lng"))
+    if latitude is None or longitude is None:
+        return None
+
+    record_key = normalize_record_key(_pick(item, "hex", "icao", "Icao"))
+    if not record_key:
+        return None
+
+    flight_number = clean_text(_pick(item, "flight", "call", "Call"))
+    registration = clean_text(_pick(item, "r", "reg", "Reg"))
+    callsign = clean_text(_pick(item, "flight", "call", "Call", "r"))
+    display_id = record_key.upper()
+    ground_speed_kts = maybe_float(_pick(item, "gs", "Spd", "speed"))
+    track = maybe_float(_pick(item, "track", "Trak"))
+    position_age_ms = None
+    last_seen_age_ms = None
+    seen_pos_seconds = maybe_float(_pick(item, "seen_pos", "SeenPos"))
+    seen_seconds = maybe_float(_pick(item, "seen", "Seen"))
+    if seen_pos_seconds is not None:
+        position_age_ms = max(0, int(round(seen_pos_seconds * 1000)))
+    if seen_seconds is not None:
+        last_seen_age_ms = max(0, int(round(seen_seconds * 1000)))
+    label_primary = build_label_primary(flight_number, registration or display_id, display_id)
+    label_full = build_label_full(flight_number, registration or display_id, display_id)
+    entity_key = f"adsbx:{record_key}"
+    baro_altitude_raw = _pick(item, "alt_baro", "Alt", "altitude")
+    geo_altitude_raw = _pick(item, "alt_geom", "geo_altitude")
+    baro_altitude = maybe_float(baro_altitude_raw)
+    geo_altitude = maybe_float(geo_altitude_raw)
+    vertical_rate_fpm = maybe_float(_pick(item, "baro_rate", "roc", "vert_rate"))
+    properties = {
+        "provider": "adsbexchange",
+        "providerKey": "adsbx",
+        "providerLabel": PROVIDER_LABELS["adsbx"],
+        "id": _pick(item, "hex", "icao", "Icao"),
+        "recordKey": record_key,
+        "entityKey": entity_key,
+        "displayId": display_id,
+        "callsign": callsign,
+        "flightNumber": flight_number,
+        "craftNumber": registration or display_id,
+        "registration": registration,
+        "aircraftType": clean_text(_pick(item, "t", "type", "Type")),
+        "originCountry": clean_text(_pick(item, "country", "country_name")),
+        "baroAltitude": baro_altitude_raw,
+        "baroAltitudeFt": baro_altitude,
+        "geoAltitude": geo_altitude_raw,
+        "geoAltitudeFt": geo_altitude,
+        "onGround": maybe_bool(_pick(item, "gnd", "Gnd")),
+        "velocity": _pick(item, "gs", "Spd", "speed"),
+        "groundSpeedMps": knots_to_mps(ground_speed_kts),
+        "groundSpeedKts": ground_speed_kts,
+        "track": track,
+        "headingDeg": track,
+        "verticalRate": vertical_rate_fpm,
+        "verticalRateMps": round(vertical_rate_fpm * 0.00508, 2) if vertical_rate_fpm is not None else None,
+        "squawk": clean_text(_pick(item, "squawk", "Sqk")),
+        "positionTimestampMs": fetched_at_ms - position_age_ms if position_age_ms is not None else None,
+        "lastSeenTimestampMs": fetched_at_ms - last_seen_age_ms if last_seen_age_ms is not None else None,
+        "positionAgeMsAtFetch": position_age_ms,
+        "contactAgeMsAtFetch": last_seen_age_ms,
+        "labelPrimary": label_primary,
+        "labelFull": label_full,
+        "detailAvailable": True,
+    }
+    feature = {
+        "type": "Feature",
+        "id": entity_key,
+        "geometry": {"type": "Point", "coordinates": [longitude, latitude]},
+        "properties": properties,
+    }
+    detail_entry = {
+        "provider": "adsbexchange",
+        "providerKey": "adsbx",
+        "recordKey": record_key,
+        "entityKey": entity_key,
+        "fetchedAtMs": fetched_at_ms,
+        "summary": build_detail_summary("adsbx", properties, latitude, longitude),
+        "raw": build_adsbx_detail_raw(item, response_now),
+    }
+    return {"feature": feature, "detail": detail_entry, "recordKey": record_key}
+
+
+def normalize_opensky(payload, fetched_at_ms=None):
+    fetched_at_ms = int(fetched_at_ms or current_time_ms())
     features = []
+    detail_entries = {}
+    response_time = payload.get("time")
     for state in payload.get("states") or []:
-        if not isinstance(state, list) or len(state) < 17:
+        record = build_opensky_record(state, fetched_at_ms, response_time)
+        if not record:
             continue
-        lon = state[5]
-        lat = state[6]
-        if lat is None or lon is None:
-            continue
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "properties": {
-                    "provider": "opensky",
-                    "id": state[0],
-                    "callsign": (state[1] or "").strip(),
-                    "originCountry": state[2],
-                    "baroAltitude": state[7],
-                    "onGround": state[8],
-                    "velocity": state[9],
-                    "track": state[10],
-                    "verticalRate": state[11],
-                    "geoAltitude": state[13],
-                    "squawk": state[14],
-                },
-            }
-        )
-    return {"type": "FeatureCollection", "features": features}
+        features.append(record["feature"])
+        detail_entries[record["recordKey"]] = record["detail"]
+    return make_feature_collection("opensky", fetched_at_ms, features), detail_entries
 
 
 def fetch_opensky(query):
@@ -696,8 +1044,12 @@ def fetch_opensky(query):
         f"{base_url}/states/all?lamin={lamin:.6f}&lomin={lomin:.6f}"
         f"&lamax={lamax:.6f}&lomax={lomax:.6f}"
     )
+    generation = FLIGHT_SNAPSHOT_CACHE.begin_request("opensky")
     payload = http_get_json(url, headers={"User-Agent": "self-hosted-maps/1.0"}, timeout=15)
-    return normalize_opensky(payload)
+    fetched_at_ms = current_time_ms()
+    feature_collection, detail_entries = normalize_opensky(payload, fetched_at_ms=fetched_at_ms)
+    FLIGHT_SNAPSHOT_CACHE.commit("opensky", generation, fetched_at_ms, detail_entries)
+    return feature_collection
 
 
 def _pick(item, *keys):
@@ -707,39 +1059,19 @@ def _pick(item, *keys):
     return None
 
 
-def normalize_adsbx(payload):
+def normalize_adsbx(payload, fetched_at_ms=None):
+    fetched_at_ms = int(fetched_at_ms or current_time_ms())
     features = []
+    detail_entries = {}
+    response_now = payload.get("now")
     aircraft = payload.get("ac") or payload.get("acList") or payload.get("aircraft") or []
     for item in aircraft:
-        if not isinstance(item, dict):
+        record = build_adsbx_record(item, fetched_at_ms, response_now)
+        if not record:
             continue
-        lat = _pick(item, "lat", "Lat")
-        lon = _pick(item, "lon", "Long", "Lng")
-        if lat is None or lon is None:
-            continue
-        try:
-            lat = float(lat)
-            lon = float(lon)
-        except (TypeError, ValueError):
-            continue
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "properties": {
-                    "provider": "adsbexchange",
-                    "id": _pick(item, "hex", "icao", "Icao"),
-                    "callsign": _pick(item, "flight", "call", "Call", "r"),
-                    "aircraftType": _pick(item, "t", "type", "Type"),
-                    "registration": _pick(item, "r", "reg", "Reg"),
-                    "baroAltitude": _pick(item, "alt_baro", "Alt", "altitude"),
-                    "onGround": _pick(item, "gnd", "Gnd"),
-                    "velocity": _pick(item, "gs", "Spd", "speed"),
-                    "track": _pick(item, "track", "Trak"),
-                },
-            }
-        )
-    return {"type": "FeatureCollection", "features": features}
+        features.append(record["feature"])
+        detail_entries[record["recordKey"]] = record["detail"]
+    return make_feature_collection("adsbx", fetched_at_ms, features), detail_entries
 
 
 def fetch_adsbx(query):
@@ -760,6 +1092,7 @@ def fetch_adsbx(query):
     dist = max(1, min(dist, 100))
     base_url = os.environ.get("SHM_ADSBEXCHANGE_API_BASE_URL", "https://adsbexchange.com/api").rstrip("/")
     url = f"{base_url}/aircraft/lat/{lat:.5f}/lon/{lng:.5f}/dist/{dist}/"
+    generation = FLIGHT_SNAPSHOT_CACHE.begin_request("adsbx")
     payload = http_get_json(
         url,
         headers={
@@ -769,7 +1102,93 @@ def fetch_adsbx(query):
         },
         timeout=15,
     )
-    return normalize_adsbx(payload)
+    fetched_at_ms = current_time_ms()
+    feature_collection, detail_entries = normalize_adsbx(payload, fetched_at_ms=fetched_at_ms)
+    FLIGHT_SNAPSHOT_CACHE.commit("adsbx", generation, fetched_at_ms, detail_entries)
+    return feature_collection
+
+
+class FlightSnapshotCache:
+    def __init__(self, ttl_ms=FLIGHT_SNAPSHOT_TTL_MS):
+        self._ttl_ms = ttl_ms
+        self._lock = threading.Lock()
+        self._latest_generation = {"opensky": 0, "adsbx": 0}
+        self._committed_generation = {"opensky": 0, "adsbx": 0}
+        self._records = {"opensky": {}, "adsbx": {}}
+
+    def clear(self):
+        with self._lock:
+            self._latest_generation = {"opensky": 0, "adsbx": 0}
+            self._committed_generation = {"opensky": 0, "adsbx": 0}
+            self._records = {"opensky": {}, "adsbx": {}}
+
+    def begin_request(self, provider_key):
+        with self._lock:
+            self._latest_generation[provider_key] += 1
+            return self._latest_generation[provider_key]
+
+    def commit(self, provider_key, generation, fetched_at_ms, detail_entries):
+        expires_at_ms = fetched_at_ms + self._ttl_ms
+        with self._lock:
+            self._prune_locked(fetched_at_ms)
+            if generation < self._committed_generation[provider_key]:
+                return False
+            self._committed_generation[provider_key] = generation
+            provider_records = self._records.setdefault(provider_key, {})
+            for record_key, entry in detail_entries.items():
+                provider_records[record_key] = {
+                    "providerKey": provider_key,
+                    "recordKey": record_key,
+                    "entityKey": entry["entityKey"],
+                    "fetchedAtMs": fetched_at_ms,
+                    "expiresAtMs": expires_at_ms,
+                    "summary": sanitize_json_value(entry["summary"]),
+                    "raw": sanitize_json_value(entry["raw"]),
+                    "provider": entry["provider"],
+                }
+            return True
+
+    def get(self, provider_key, record_key, current_ms=None):
+        now_ms = int(current_ms or current_time_ms())
+        with self._lock:
+            self._prune_locked(now_ms)
+            entry = self._records.get(provider_key, {}).get(record_key)
+            if not entry:
+                return None
+            if entry["expiresAtMs"] <= now_ms:
+                self._records.get(provider_key, {}).pop(record_key, None)
+                return None
+            return json.loads(json.dumps(entry))
+
+    def _prune_locked(self, now_ms):
+        for provider_key, records in self._records.items():
+            expired = [record_key for record_key, entry in records.items() if entry["expiresAtMs"] <= now_ms]
+            for record_key in expired:
+                records.pop(record_key, None)
+
+
+FLIGHT_SNAPSHOT_CACHE = FlightSnapshotCache()
+
+
+def build_flight_detail_response(provider_key, record_key):
+    provider_key = require_flight_provider_key(provider_key)
+    normalized_record_key = normalize_record_key(record_key)
+    if not normalized_record_key:
+        raise ValueError("recordKey is required.")
+    entry = FLIGHT_SNAPSHOT_CACHE.get(provider_key, normalized_record_key)
+    if not entry:
+        return None
+    return {
+        "available": True,
+        "provider": entry["provider"],
+        "providerKey": provider_key,
+        "providerLabel": PROVIDER_LABELS[provider_key],
+        "recordKey": normalized_record_key,
+        "entityKey": entry["entityKey"],
+        "fetchedAtMs": entry["fetchedAtMs"],
+        "summary": entry["summary"],
+        "raw": entry["raw"],
+    }
 
 
 class JobStore:
@@ -951,6 +1370,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, json_response(True, fetch_opensky(query)))
             elif path == "/api/flights/adsbx":
                 self._send_json(200, json_response(True, fetch_adsbx(query)))
+            elif path == "/api/flights/detail":
+                provider_key = (query.get("providerKey") or [""])[0]
+                record_key = (query.get("recordKey") or [""])[0]
+                detail = build_flight_detail_response(provider_key, record_key)
+                if not detail:
+                    self._send_json(
+                        404,
+                        json_response(
+                            False,
+                            error={
+                                "code": "flight_detail_not_found",
+                                "message": "Flight detail is unavailable for the selected aircraft.",
+                            },
+                        ),
+                    )
+                    return
+                self._send_json(200, json_response(True, detail))
             elif path == "/api/admin/jobs/current":
                 if not self._require_admin():
                     return
