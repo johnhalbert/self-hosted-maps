@@ -85,6 +85,11 @@ function reducedMotionEnabled() {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+function flightDebugEnabled() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("flightDebug") === "1" || window.localStorage.getItem("shm-flight-debug") === "1";
+}
+
 const appState = {
   map: null,
   overview: null,
@@ -113,6 +118,15 @@ const appState = {
   },
   flightAnimationFrame: null,
   lastFlightRenderAtMs: 0,
+  flightDebug: {
+    enabled: flightDebugEnabled(),
+    overlay: null,
+    tickCount: 0,
+    renderCount: 0,
+    lastTickAtMs: null,
+    lastScheduleAtMs: null,
+    lastScheduleDecision: "not-started"
+  },
   selectedFlight: null,
   flightPopup: null,
   suppressFlightPopupClose: false,
@@ -940,25 +954,45 @@ function projectLngLat(lngLat, headingDeg, distanceMeters) {
   return [((degrees(lng2) + 540) % 360) - 180, degrees(lat2)];
 }
 
-function canProjectTrack(track) {
+function flightProjectionBlockReason(track) {
+  if (!track) {
+    return "missing-track";
+  }
+  if (track.status !== "tracked") {
+    return `status:${track.status || "unknown"}`;
+  }
+  if (track.properties.onGround) {
+    return "on-ground";
+  }
+  if (toFiniteNumber(track.properties.groundSpeedMps) === null) {
+    return "missing-speed";
+  }
+  if (toFiniteNumber(track.properties.headingDeg) === null) {
+    return "missing-heading";
+  }
   const positionAgeMsAtFetch = toFiniteNumber(track.properties.positionAgeMsAtFetch);
-  return (
-    track.status === "tracked" &&
-    !track.properties.onGround &&
-    Number.isFinite(track.properties.groundSpeedMps) &&
-    Number.isFinite(track.properties.headingDeg) &&
-    (positionAgeMsAtFetch === null || positionAgeMsAtFetch <= FLIGHT_MAX_POSITION_AGE_MS) &&
-    Number.isFinite(track.deadReckonStartedAtMs)
-  );
+  if (positionAgeMsAtFetch !== null && positionAgeMsAtFetch > FLIGHT_MAX_POSITION_AGE_MS) {
+    return "stale-position";
+  }
+  if (!Number.isFinite(track.deadReckonStartedAtMs)) {
+    return "missing-dead-reckon-start";
+  }
+  return null;
+}
+
+function canProjectTrack(track) {
+  return flightProjectionBlockReason(track) === null;
 }
 
 function computeTrackTargetLngLat(track, nowMs) {
   if (!canProjectTrack(track)) {
     return track.reportedLngLat;
   }
+  const groundSpeedMps = toFiniteNumber(track.properties.groundSpeedMps);
+  const headingDeg = toFiniteNumber(track.properties.headingDeg);
   const elapsedMs = clamp(nowMs - track.deadReckonStartedAtMs, 0, FLIGHT_MAX_PROJECTION_MS);
-  const distanceMeters = track.properties.groundSpeedMps * (elapsedMs / 1000);
-  return projectLngLat(track.reportedLngLat, track.properties.headingDeg, distanceMeters);
+  const distanceMeters = groundSpeedMps * (elapsedMs / 1000);
+  return projectLngLat(track.reportedLngLat, headingDeg, distanceMeters);
 }
 
 function computeTrackDisplayedLngLat(track, nowMs, allowAnimation) {
@@ -1045,6 +1079,60 @@ function buildSourceFeatureFromTrack(track, nowMs, allowAnimation) {
   };
 }
 
+function flightDebugText(value) {
+  return value == null || value === "" ? "n/a" : String(value);
+}
+
+function flightDebugAge(valueMs, nowMs) {
+  const value = toFiniteNumber(valueMs);
+  return value === null ? "never" : `${Math.max(0, Math.round((nowMs - value) / 1000))}s ago`;
+}
+
+function flightDebugProviderSummary(providerKey, nowMs) {
+  const runtime = appState.flightRuntime[providerKey];
+  const reasons = {};
+  let projectableCount = 0;
+  runtime.tracks.forEach((track) => {
+    const reason = flightProjectionBlockReason(track);
+    if (reason === null) {
+      projectableCount += 1;
+      return;
+    }
+    reasons[reason] = (reasons[reason] || 0) + 1;
+  });
+  const reasonText = Object.entries(reasons)
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(", ");
+  return [
+    `${providerKey}: enabled=${appState.flightsEnabled[providerKey]} available=${isFlightProviderAvailable(providerKey)}`,
+    `  tracks=${runtime.tracks.size} projectable=${projectableCount} animAllowed=${flightTrackAnimationAllowed(providerKey)}`,
+    `  lastSuccess=${flightDebugAge(runtime.lastSuccessAtMs, nowMs)} requestSeq=${runtime.requestSeq}`,
+    `  blocked=${reasonText || "none"}`,
+    `  footprint=${flightDebugText(JSON.stringify(runtime.lastQueryFootprint))}`
+  ].join("\n");
+}
+
+function updateFlightDebugOverlay(nowMs = Date.now()) {
+  if (!appState.flightDebug.enabled) {
+    return;
+  }
+  if (!appState.flightDebug.overlay) {
+    appState.flightDebug.overlay = document.createElement("pre");
+    appState.flightDebug.overlay.className = "flight-debug-overlay";
+    document.body.appendChild(appState.flightDebug.overlay);
+  }
+  const lines = [
+    "Flight debug",
+    `zoom=${appState.map ? appState.map.getZoom().toFixed(2) : "n/a"} reducedMotion=${appState.prefersReducedMotion}`,
+    `rafActive=${Boolean(appState.flightAnimationFrame)} ticks=${appState.flightDebug.tickCount} renders=${appState.flightDebug.renderCount}`,
+    `lastTick=${flightDebugAge(appState.flightDebug.lastTickAtMs, nowMs)} lastRender=${flightDebugAge(appState.lastFlightRenderAtMs, nowMs)}`,
+    `schedule=${appState.flightDebug.lastScheduleDecision} at ${flightDebugAge(appState.flightDebug.lastScheduleAtMs, nowMs)}`,
+    flightDebugProviderSummary("opensky", nowMs),
+    flightDebugProviderSummary("adsbx", nowMs)
+  ];
+  appState.flightDebug.overlay.textContent = lines.join("\n");
+}
+
 function renderFlightProvider(providerKey, nowMs = Date.now()) {
   const runtime = appState.flightRuntime[providerKey];
   const animateProvider = flightTrackAnimationAllowed(providerKey);
@@ -1060,6 +1148,8 @@ function renderFlightProvider(providerKey, nowMs = Date.now()) {
       fetchedAtMs: runtime.lastSuccessAtMs
     }
   });
+  appState.flightDebug.renderCount += 1;
+  updateFlightDebugOverlay(nowMs);
 }
 
 function selectedTrack() {
@@ -1514,7 +1604,13 @@ function clearFlightProviderState(providerKey, options = {}) {
 }
 
 function scheduleFlightAnimation() {
+  const nowMs = Date.now();
+  appState.flightDebug.lastScheduleAtMs = nowMs;
   if (appState.prefersReducedMotion || appState.flightAnimationFrame) {
+    appState.flightDebug.lastScheduleDecision = appState.prefersReducedMotion
+      ? "skip:reduced-motion"
+      : "skip:raf-already-active";
+    updateFlightDebugOverlay(nowMs);
     return;
   }
   const hasAnimatedTracks = Object.keys(flightProviders).some((providerKey) =>
@@ -1523,14 +1619,20 @@ function scheduleFlightAnimation() {
   const selectedCanAnimate =
     appState.selectedFlight && flightTrackAnimationAllowed(appState.selectedFlight.providerKey);
   if (!hasAnimatedTracks && !selectedCanAnimate) {
+    appState.flightDebug.lastScheduleDecision = "skip:no-animation-eligible-tracks";
+    updateFlightDebugOverlay(nowMs);
     return;
   }
+  appState.flightDebug.lastScheduleDecision = "start:request-animation-frame";
+  updateFlightDebugOverlay(nowMs);
   appState.flightAnimationFrame = window.requestAnimationFrame(tickFlightAnimation);
 }
 
 function tickFlightAnimation() {
   appState.flightAnimationFrame = null;
   const nowMs = Date.now();
+  appState.flightDebug.tickCount += 1;
+  appState.flightDebug.lastTickAtMs = nowMs;
   if (nowMs - appState.lastFlightRenderAtMs >= FLIGHT_RENDER_INTERVAL_MS) {
     Object.keys(flightProviders).forEach((providerKey) => {
       if (appState.flightsEnabled[providerKey]) {
@@ -1547,6 +1649,7 @@ function tickFlightAnimation() {
   if (shouldContinue) {
     appState.flightAnimationFrame = window.requestAnimationFrame(tickFlightAnimation);
   }
+  updateFlightDebugOverlay(nowMs);
 }
 
 function bindFlightMapInteractions() {
@@ -2101,6 +2204,7 @@ function bindDomEvents() {
     }
   }
   syncFlightMenuState();
+  updateFlightDebugOverlay();
 }
 
 async function initMap() {
