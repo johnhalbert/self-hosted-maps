@@ -42,6 +42,8 @@ SHM_UPDATE_SCHEDULE="${SHM_UPDATE_SCHEDULE}"
 SHM_INSTALL_USER="${SHM_INSTALL_USER}"
 SHM_TIMEZONE="${SHM_TIMEZONE}"
 SHM_RUNTIME_CONFIG_FILE="${cfg_dir}/self-hosted-maps.runtime.conf"
+SHM_APP_SOURCE_ROOT="${SHM_REPO_ROOT:-}"
+SHM_APP_MANIFEST_FILE="${cfg_dir}/app-manifest.json"
 CFG
 }
 
@@ -68,6 +70,77 @@ SHM_ADSBEXCHANGE_API_KEY=""
 SHM_ADMIN_TOKEN=""
 CFG
   chmod 0600 "$runtime_file"
+}
+
+write_initial_app_manifest() {
+  local cfg_dir="$1"
+  local source_root="$2"
+  local manifest_file="$cfg_dir/app-manifest.json"
+  local tmp_file commit branch describe remote_url status dirty untracked_count
+
+  command -v jq >/dev/null 2>&1 || return 0
+
+  commit=""
+  branch=""
+  describe=""
+  remote_url=""
+  dirty=false
+  untracked_count=0
+
+  if command -v git >/dev/null 2>&1 && git -C "$source_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    commit="$(git -C "$source_root" rev-parse HEAD 2>/dev/null || true)"
+    branch="$(git -C "$source_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    describe="$(git -C "$source_root" describe --tags --always --dirty 2>/dev/null || true)"
+    remote_url="$(git -C "$source_root" config --get remote.origin.url 2>/dev/null || true)"
+    status="$(git -C "$source_root" status --porcelain 2>/dev/null || true)"
+    [[ -z "$status" ]] || dirty=true
+    untracked_count="$(printf '%s\n' "$status" | awk '/^\?\?/ {count++} END {print count+0}')"
+  fi
+
+  tmp_file="${manifest_file}.tmp"
+  jq -n \
+    --arg updated_at "$(date -u +%FT%TZ)" \
+    --arg source_root "$source_root" \
+    --arg install_root "$SHM_INSTALL_ROOT" \
+    --arg config_root "$SHM_CONFIG_ROOT" \
+    --arg data_root "$SHM_DATA_ROOT" \
+    --arg commit "$commit" \
+    --arg branch "$branch" \
+    --arg describe "$describe" \
+    --arg remote_url "$remote_url" \
+    --argjson dirty "$dirty" \
+    --argjson untracked_count "$untracked_count" \
+    '{
+      manifest_version: 1,
+      updater_version: "install",
+      updated_at: $updated_at,
+      source: {
+        path: $source_root,
+        git: {
+          available: ($commit | length > 0),
+          commit: ($commit | select(length > 0) // null),
+          branch: ($branch | select(length > 0) // null),
+          describe: ($describe | select(length > 0) // null),
+          dirty: $dirty,
+          untracked_count: $untracked_count,
+          remote_url: ($remote_url | select(length > 0) // null)
+        }
+      },
+      installed: {
+        install_root: $install_root,
+        config_root: $config_root,
+        data_root: $data_root
+      },
+      update: {
+        refresh_system_config: true,
+        surfaces: {
+          runtime: ["install_root/bin", "install_root/www", "config_root/manager-usage.txt", "/usr/local/bin/self-hosted-maps-* symlinks"],
+          preserved: ["config_root/self-hosted-maps.runtime.conf", "config_root/datasets.json", "data_root/datasets", "data_root/current", "install_root/www/vendor"]
+        }
+      }
+    }' > "$tmp_file"
+  mv "$tmp_file" "$manifest_file"
+  chmod 0644 "$manifest_file"
 }
 
 safe_mkdirs() {

@@ -24,3 +24,4 @@ mkdir -p "$SHM_INSTALL_ROOT/www/vendor"
 curl -L --fail --retry 5 -o "$SHM_INSTALL_ROOT/www/vendor/maplibre-gl.js" https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.js
 curl -L --fail --retry 5 -o "$SHM_INSTALL_ROOT/www/vendor/maplibre-gl.css" https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.css
 chmod +x "$SHM_INSTALL_ROOT/bin/"*.sh
+write_initial_app_manifest "$SHM_CONFIG_ROOT" "$SHM_REPO_ROOT"

@@ -12,6 +12,7 @@ Useful commands:
   self-hosted-maps-rebuild
   self-hosted-maps-refresh-catalog
   self-hosted-maps-list-installed
+  self-hosted-maps-update-app
 
 State file:
   /etc/self-hosted-maps/datasets.json
@@ -41,6 +42,14 @@ Manager capabilities:
 - redownload a dataset via the update action
 - choose selected datasets for the next rebuild
 - rebuild the served map explicitly
+- update the installed application from a local source checkout
+
+Application updates:
+- Run self-hosted-maps-manager and choose "Update application", or run self-hosted-maps-update-app directly.
+- The updater applies an already-updated local checkout into /opt/self-hosted-maps. It does not run git pull, update datasets, rebuild maps, install packages, or change runtime secrets.
+- By default, app updates refresh installed scripts, viewer assets, manager docs, and command shortcuts while preserving downloaded datasets, current map tiles, runtime credentials, dataset state, and /opt/self-hosted-maps/www/vendor.
+- Advanced system config refresh is optional and separately confirmed because it can update systemd, nginx, and TileServer config.
+- App update metadata is written to /etc/self-hosted-maps/app-manifest.json. Backups are stored under /var/lib/self-hosted-maps/backups/app-update.
 
 Notes:
 - The installer bootstraps the first dataset into the dataset state automatically.

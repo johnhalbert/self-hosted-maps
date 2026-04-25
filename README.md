@@ -16,3 +16,22 @@ SHM_OPENSKY_CLIENT_SECRET="your-api-client-secret"
 ```
 
 The optional `SHM_OPENSKY_TOKEN_URL` defaults to OpenSky's OAuth2 client-credentials token endpoint. Restart `self-hosted-maps-api` after changing runtime credentials.
+
+## Application Updates
+
+Installed systems include a local updater so you do not need to recreate the Debian host for application changes. Update your source checkout first, then run:
+
+```sh
+self-hosted-maps-manager
+```
+
+Choose `Update application`, review the preview, and confirm the update. You can also run the updater directly:
+
+```sh
+self-hosted-maps-update-app --source /path/to/self-hosted-maps --preview
+self-hosted-maps-update-app --source /path/to/self-hosted-maps --apply
+```
+
+The updater applies a local checkout into `/opt/self-hosted-maps`; it does not run `git pull`, update datasets, rebuild maps, install packages, or change runtime secrets. Default updates refresh installed scripts, viewer assets, manager docs, and command shortcuts while preserving downloaded datasets, current map tiles, runtime credentials, dataset state, and `/opt/self-hosted-maps/www/vendor`.
+
+Use `--refresh-system-config` only when you want to update systemd, nginx, or TileServer config from the checkout. App update metadata is stored in `/etc/self-hosted-maps/app-manifest.json`, with backups under `/var/lib/self-hosted-maps/backups/app-update`.

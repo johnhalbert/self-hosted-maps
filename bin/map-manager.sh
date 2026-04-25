@@ -240,10 +240,73 @@ rebuild_ui() {
   whiptail --title "Rebuild Current Map" --msgbox "Rebuild finished. Check ${SHM_LOG_ROOT}/rebuild-selected.log for details." 10 80
 }
 
+update_app_ui() {
+  local manifest_file source_default source_path preview_tmp apply_tmp include_system_config dirty_state
+  manifest_file="${SHM_APP_MANIFEST_FILE:-${SHM_CONFIG_ROOT}/app-manifest.json}"
+  source_default="${SHM_APP_SOURCE_ROOT:-}"
+  if [[ -z "$source_default" && -f "$manifest_file" ]]; then
+    source_default="$(jq -r '.source.path // empty' "$manifest_file" 2>/dev/null || true)"
+  fi
+
+  source_path="$(whiptail --title "Update Application" --inputbox "Path to the updated self-hosted-maps checkout.\n\nThe updater applies this local checkout into the installed app. It does not run git pull." 13 90 "$source_default" 3>&1 1>&2 2>&3)" || return 0
+  if [[ -z "$source_path" ]]; then
+    whiptail --title "Update Application" --msgbox "No source checkout path was provided." 10 70
+    return 0
+  fi
+
+  preview_tmp="$(mktemp)"
+  if ! bash "$SHM_BIN_DIR/update-app.sh" --source "$source_path" --preview --json > "$preview_tmp" 2>&1; then
+    whiptail --title "Update Preview Failed" --textbox "$preview_tmp" 24 110
+    rm -f "$preview_tmp"
+    return 0
+  fi
+  if ! jq . "$preview_tmp" > "${preview_tmp}.formatted"; then
+    whiptail --title "Update Preview Failed" --textbox "$preview_tmp" 24 110
+    rm -f "$preview_tmp" "${preview_tmp}.formatted"
+    return 0
+  fi
+  mv "${preview_tmp}.formatted" "$preview_tmp"
+
+  whiptail --title "Application Update Preview" --textbox "$preview_tmp" 30 120
+  dirty_state="$(jq -r '.source.git.dirty // false' "$preview_tmp")"
+
+  if [[ "$dirty_state" == "true" ]]; then
+    if ! whiptail --title "Dirty Source Checkout" --yesno "The source checkout has uncommitted or untracked changes. Apply this exact working tree anyway?" 10 80; then
+      rm -f "$preview_tmp"
+      return 0
+    fi
+  fi
+
+  include_system_config=0
+  if whiptail --title "Advanced System Config" --yesno "Also refresh systemd, nginx, and TileServer config from the source checkout?\n\nMost app updates do not need this. Choose No for the normal scripts/assets/docs update." 13 82; then
+    include_system_config=1
+  fi
+
+  if ! whiptail --title "Apply Application Update" --yesno "Apply the application update now?\n\nDatasets, current map tiles, runtime credentials, and dataset state will be preserved." 12 82; then
+    rm -f "$preview_tmp"
+    return 0
+  fi
+
+  apply_tmp="$(mktemp)"
+  set +e
+  if [[ "$include_system_config" == "1" ]]; then
+    bash "$SHM_BIN_DIR/update-app.sh" --source "$source_path" --apply --yes --refresh-system-config > "$apply_tmp" 2>&1
+  else
+    bash "$SHM_BIN_DIR/update-app.sh" --source "$source_path" --apply --yes > "$apply_tmp" 2>&1
+  fi
+  local status=$?
+  set -e
+  whiptail --title "Application Update Result" --textbox "$apply_tmp" 24 110
+  rm -f "$preview_tmp" "$apply_tmp"
+  if [[ "$status" -eq 0 ]]; then
+    whiptail --title "Application Update Complete" --msgbox "Application update complete.\n\nIf this manager was updated, exit and relaunch self-hosted-maps-manager to use the newest menu code." 12 80
+  fi
+}
+
 show_first_run_hint_if_needed
 
 while true; do
-  choice="$(whiptail --title "Self Hosted Maps Manager" --menu "Choose an action" 23 86 13 \
+  choice="$(whiptail --title "Self Hosted Maps Manager" --menu "Choose an action" 24 86 14 \
     1 "Browse catalog" \
     2 "Install dataset" \
     3 "Show installed datasets" \
@@ -252,9 +315,10 @@ while true; do
     6 "Check dataset updates" \
     7 "Update dataset" \
     8 "Rebuild current map" \
-    9 "Remove dataset" \
-    10 "Refresh catalog" \
-    11 "Exit" 3>&1 1>&2 2>&3)" || exit 0
+    9 "Update application" \
+    10 "Remove dataset" \
+    11 "Refresh catalog" \
+    12 "Exit" 3>&1 1>&2 2>&3)" || exit 0
   case "$choice" in
     1) browse_catalog_ui ;;
     2) install_dataset_ui ;;
@@ -264,8 +328,9 @@ while true; do
     6) check_updates_ui ;;
     7) update_dataset_ui ;;
     8) rebuild_ui ;;
-    9) remove_dataset_ui ;;
-    10) refresh_catalog_ui ;;
-    11) exit 0 ;;
+    9) update_app_ui ;;
+    10) remove_dataset_ui ;;
+    11) refresh_catalog_ui ;;
+    12) exit 0 ;;
   esac
 done
