@@ -6,8 +6,9 @@ const fallbackView = {
 
 const FLIGHT_SELECTED_SOURCE_ID = "selected-flight";
 const FLIGHT_SELECTED_LAYER_ID = "selected-flight-halo";
-const FLIGHT_ANIMATION_WINDOW_MS = 900;
-const FLIGHT_MAX_PROJECTION_MS = 10000;
+const FLIGHT_POLL_INTERVAL_MS = 15000;
+const FLIGHT_MAX_PROJECTION_MS = 20000;
+const FLIGHT_MAX_POSITION_AGE_MS = 30000;
 const FLIGHT_STALE_GRACE_MS = 20000;
 const FLIGHT_RENDER_INTERVAL_MS = 1000 / 10;
 const FLIGHT_MAX_ANIMATED_FEATURES = 200;
@@ -939,24 +940,15 @@ function projectLngLat(lngLat, headingDeg, distanceMeters) {
   return [((degrees(lng2) + 540) % 360) - 180, degrees(lat2)];
 }
 
-function easeOutCubic(value) {
-  return 1 - Math.pow(1 - value, 3);
-}
-
-function interpolateLngLat(fromLngLat, toLngLat, factor) {
-  return [
-    fromLngLat[0] + (toLngLat[0] - fromLngLat[0]) * factor,
-    fromLngLat[1] + (toLngLat[1] - fromLngLat[1]) * factor
-  ];
-}
-
 function canProjectTrack(track) {
   return (
     track.status === "tracked" &&
     !track.properties.onGround &&
     Number.isFinite(track.properties.groundSpeedMps) &&
     Number.isFinite(track.properties.headingDeg) &&
-    Number.isFinite(track.properties.positionAgeMsAtFetch)
+    Number.isFinite(track.properties.positionAgeMsAtFetch) &&
+    track.properties.positionAgeMsAtFetch <= FLIGHT_MAX_POSITION_AGE_MS &&
+    Number.isFinite(track.deadReckonStartedAtMs)
   );
 }
 
@@ -964,11 +956,7 @@ function computeTrackTargetLngLat(track, nowMs) {
   if (!canProjectTrack(track)) {
     return track.reportedLngLat;
   }
-  const elapsedMs = clamp(
-    (track.properties.positionAgeMsAtFetch || 0) + (nowMs - track.fetchedAtMs),
-    0,
-    FLIGHT_MAX_PROJECTION_MS
-  );
+  const elapsedMs = clamp(nowMs - track.deadReckonStartedAtMs, 0, FLIGHT_MAX_PROJECTION_MS);
   const distanceMeters = track.properties.groundSpeedMps * (elapsedMs / 1000);
   return projectLngLat(track.reportedLngLat, track.properties.headingDeg, distanceMeters);
 }
@@ -977,19 +965,13 @@ function computeTrackDisplayedLngLat(track, nowMs, allowAnimation) {
   if (!track) {
     return null;
   }
-  if (!allowAnimation || appState.prefersReducedMotion || track.status !== "tracked") {
+  if (track.status !== "tracked") {
     return track.displayedLngLat || track.reportedLngLat;
   }
-  const target = computeTrackTargetLngLat(track, nowMs);
-  if (!Array.isArray(track.animationFromLngLat)) {
-    return target;
+  if (!allowAnimation || appState.prefersReducedMotion || track.status !== "tracked") {
+    return track.reportedLngLat;
   }
-  const elapsedMs = nowMs - track.transitionStartedAtMs;
-  if (elapsedMs >= FLIGHT_ANIMATION_WINDOW_MS) {
-    return target;
-  }
-  const progress = easeOutCubic(clamp(elapsedMs / FLIGHT_ANIMATION_WINDOW_MS, 0, 1));
-  return interpolateLngLat(track.animationFromLngLat, target, progress);
+  return computeTrackTargetLngLat(track, nowMs);
 }
 
 function currentDisplayedLngLat(track, nowMs, allowAnimation) {
@@ -1000,7 +982,7 @@ function currentDisplayedLngLat(track, nowMs, allowAnimation) {
   return lngLat;
 }
 
-function createFlightTrack(providerKey, feature, fetchedAtMs, previousTrack, nowMs) {
+function createFlightTrack(providerKey, feature, fetchedAtMs, nowMs) {
   if (!feature || feature.type !== "Feature") {
     return null;
   }
@@ -1019,18 +1001,14 @@ function createFlightTrack(providerKey, feature, fetchedAtMs, previousTrack, now
     return null;
   }
   const entityKey = buildFlightEntityKey(providerKey, recordKey);
-  const previousLngLat = previousTrack
-    ? currentDisplayedLngLat(previousTrack, nowMs, !appState.prefersReducedMotion)
-    : [lng, lat];
   return {
     providerKey,
     recordKey,
     entityKey,
     featureId: feature.id || entityKey,
     reportedLngLat: [lng, lat],
-    displayedLngLat: previousLngLat,
-    animationFromLngLat: previousLngLat,
-    transitionStartedAtMs: fetchedAtMs,
+    displayedLngLat: [lng, lat],
+    deadReckonStartedAtMs: nowMs,
     fetchedAtMs,
     status: "tracked",
     missingSinceMs: null,
@@ -1045,6 +1023,18 @@ function createFlightTrack(providerKey, feature, fetchedAtMs, previousTrack, now
   };
 }
 
+function flightTrackAnimationAllowed(providerKey) {
+  const runtime = appState.flightRuntime[providerKey];
+  return (
+    Boolean(runtime) &&
+    appState.flightsEnabled[providerKey] &&
+    !appState.prefersReducedMotion &&
+    runtime.tracks.size > 0 &&
+    runtime.tracks.size <= FLIGHT_MAX_ANIMATED_FEATURES &&
+    Array.from(runtime.tracks.values()).some((track) => canProjectTrack(track))
+  );
+}
+
 function buildSourceFeatureFromTrack(track, nowMs, allowAnimation) {
   const coordinates = currentDisplayedLngLat(track, nowMs, allowAnimation);
   return {
@@ -1057,8 +1047,7 @@ function buildSourceFeatureFromTrack(track, nowMs, allowAnimation) {
 
 function renderFlightProvider(providerKey, nowMs = Date.now()) {
   const runtime = appState.flightRuntime[providerKey];
-  const animateProvider =
-    !appState.prefersReducedMotion && runtime.tracks.size <= FLIGHT_MAX_ANIMATED_FEATURES;
+  const animateProvider = flightTrackAnimationAllowed(providerKey);
   const features = [];
   runtime.tracks.forEach((track) => {
     features.push(buildSourceFeatureFromTrack(track, nowMs, animateProvider));
@@ -1088,7 +1077,7 @@ function selectedLngLat(nowMs = Date.now()) {
   }
   const track = selectedTrack();
   if (track) {
-    const lngLat = currentDisplayedLngLat(track, nowMs, !appState.prefersReducedMotion);
+    const lngLat = currentDisplayedLngLat(track, nowMs, flightTrackAnimationAllowed(track.providerKey));
     appState.selectedFlight.lastKnownLngLat = lngLat;
     appState.selectedFlight.summary = { ...track.properties };
     appState.selectedFlight.status = track.status;
@@ -1478,7 +1467,6 @@ function ingestFlightResponse(providerKey, featureCollection, queryFootprint) {
       providerKey,
       feature,
       fetchedAtMs,
-      runtime.tracks.get(entityKey),
       nowMs
     );
     if (!nextTrack) {
@@ -1529,10 +1517,12 @@ function scheduleFlightAnimation() {
   if (appState.prefersReducedMotion || appState.flightAnimationFrame) {
     return;
   }
-  const hasTracks = Object.keys(flightProviders).some(
-    (providerKey) => appState.flightsEnabled[providerKey] && appState.flightRuntime[providerKey].tracks.size
+  const hasAnimatedTracks = Object.keys(flightProviders).some((providerKey) =>
+    flightTrackAnimationAllowed(providerKey)
   );
-  if (!hasTracks && !appState.selectedFlight) {
+  const selectedCanAnimate =
+    appState.selectedFlight && flightTrackAnimationAllowed(appState.selectedFlight.providerKey);
+  if (!hasAnimatedTracks && !selectedCanAnimate) {
     return;
   }
   appState.flightAnimationFrame = window.requestAnimationFrame(tickFlightAnimation);
@@ -1552,10 +1542,8 @@ function tickFlightAnimation() {
   updateSelectedFlightSource(nowMs);
   const shouldContinue =
     !appState.prefersReducedMotion &&
-    (Object.keys(flightProviders).some(
-      (providerKey) => appState.flightsEnabled[providerKey] && appState.flightRuntime[providerKey].tracks.size
-    ) ||
-      Boolean(appState.selectedFlight));
+    (Object.keys(flightProviders).some((providerKey) => flightTrackAnimationAllowed(providerKey)) ||
+      Boolean(appState.selectedFlight && flightTrackAnimationAllowed(appState.selectedFlight.providerKey)));
   if (shouldContinue) {
     appState.flightAnimationFrame = window.requestAnimationFrame(tickFlightAnimation);
   }
@@ -1687,7 +1675,7 @@ function toggleFlight(providerKey) {
     refreshFlights(providerKey);
     appState.flightTimers[providerKey] = window.setInterval(() => {
       refreshFlights(providerKey, true);
-    }, 15000);
+    }, FLIGHT_POLL_INTERVAL_MS);
   } else {
     stopFlightPolling(providerKey);
   }
