@@ -752,7 +752,7 @@ function ensureFlightLayers() {
             13,
             0.68
           ],
-          "icon-rotate": ["coalesce", ["get", "headingDeg"], 0],
+          "icon-rotate": ["+", ["coalesce", ["get", "headingDeg"], 0], 180],
           "icon-rotation-alignment": "map",
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
@@ -941,13 +941,13 @@ function projectLngLat(lngLat, headingDeg, distanceMeters) {
 }
 
 function canProjectTrack(track) {
+  const positionAgeMsAtFetch = toFiniteNumber(track.properties.positionAgeMsAtFetch);
   return (
     track.status === "tracked" &&
     !track.properties.onGround &&
     Number.isFinite(track.properties.groundSpeedMps) &&
     Number.isFinite(track.properties.headingDeg) &&
-    Number.isFinite(track.properties.positionAgeMsAtFetch) &&
-    track.properties.positionAgeMsAtFetch <= FLIGHT_MAX_POSITION_AGE_MS &&
+    (positionAgeMsAtFetch === null || positionAgeMsAtFetch <= FLIGHT_MAX_POSITION_AGE_MS) &&
     Number.isFinite(track.deadReckonStartedAtMs)
   );
 }
