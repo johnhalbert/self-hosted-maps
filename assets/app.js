@@ -37,6 +37,61 @@ const TRAFFIC_LAYERS = {
     opacity: 0.9
   }
 };
+const OSM_OVERLAY_STORAGE_KEY = "shm.osmThemeLayers.v1";
+const OPTIONAL_OSM_SOURCE_LAYERS = new Set([
+  "boundary",
+  "landuse",
+  "park",
+  "theme_area",
+  "theme_line",
+  "theme_poi",
+  "transportation_name",
+  "water_name"
+]);
+const OSM_OVERLAY_GROUPS = [
+  {
+    key: "greenSpace",
+    buttonId: "toggleOsmGreenSpace",
+    label: "Green space",
+    layerIds: ["landcover", "landuse", "park", "theme-green-space-area"],
+    sourceLayers: ["landcover", "landuse", "park", "theme_area"]
+  },
+  {
+    key: "water",
+    buttonId: "toggleOsmWater",
+    label: "Water",
+    layerIds: ["water", "waterway", "water-label"],
+    sourceLayers: ["water", "waterway", "water_name"]
+  },
+  {
+    key: "roads",
+    buttonId: "toggleOsmRoads",
+    label: "Roads",
+    layerIds: ["transportation", "road-label", "theme-mobility-line"],
+    sourceLayers: ["transportation", "transportation_name", "theme_line"]
+  },
+  {
+    key: "buildings",
+    buttonId: "toggleOsmBuildings",
+    label: "Buildings",
+    layerIds: ["building"],
+    sourceLayers: ["building"]
+  },
+  {
+    key: "boundaries",
+    buttonId: "toggleOsmBoundaries",
+    label: "Boundaries",
+    layerIds: ["boundary"],
+    sourceLayers: ["boundary"]
+  },
+  {
+    key: "placesPois",
+    buttonId: "toggleOsmPlacesPois",
+    label: "Places and POIs",
+    layerIds: ["place-label", "theme-poi"],
+    sourceLayers: ["place", "theme_poi"]
+  }
+];
 const FLIGHT_PROVIDER_ALIASES = {
   opensky: "opensky",
   adsbx: "adsbx",
@@ -77,6 +132,19 @@ const VESSEL_ICON_SVG = `
     />
   </svg>
 `;
+
+function readOsmOverlayVisibility() {
+  try {
+    const payload = JSON.parse(window.localStorage.getItem(OSM_OVERLAY_STORAGE_KEY) || "{}");
+    return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function writeOsmOverlayVisibility() {
+  window.localStorage.setItem(OSM_OVERLAY_STORAGE_KEY, JSON.stringify(appState.osmOverlayVisibility));
+}
 
 const flightProviders = {
   opensky: {
@@ -185,6 +253,9 @@ const appState = {
     flow: false,
     incidents: false
   },
+  osmSourceLayers: null,
+  osmOverlayVisibility: readOsmOverlayVisibility(),
+  osmMenuOpen: false,
   suppressFlightPopupClose: false,
   prefersReducedMotion: reducedMotionEnabled(),
   flightMenuOpen: false,
@@ -336,8 +407,8 @@ function applySelectedAreaOverlay() {
   }
 }
 
-function buildStyle(tilejsonUrl, selectedAreaData) {
-  return {
+function buildStyle(tilejsonUrl, selectedAreaData, options = {}) {
+  const style = {
     version: 8,
     glyphs: "/fonts/{fontstack}/{range}.pbf",
     sources: {
@@ -417,6 +488,17 @@ function buildStyle(tilejsonUrl, selectedAreaData) {
         }
       },
       {
+        id: "theme-green-space-area",
+        type: "fill",
+        source: "osm",
+        "source-layer": "theme_area",
+        filter: ["==", ["get", "theme"], "green_space"],
+        paint: {
+          "fill-color": "#b7dc9a",
+          "fill-opacity": 0.38
+        }
+      },
+      {
         id: "water",
         type: "fill",
         source: "osm",
@@ -461,6 +543,29 @@ function buildStyle(tilejsonUrl, selectedAreaData) {
             14,
             2.2
           ]
+        }
+      },
+      {
+        id: "theme-mobility-line",
+        type: "line",
+        source: "osm",
+        "source-layer": "theme_line",
+        filter: ["==", ["get", "theme"], "mobility"],
+        minzoom: 11,
+        paint: {
+          "line-color": "#0f766e",
+          "line-width": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            11,
+            0.7,
+            14,
+            1.4,
+            16,
+            2.3
+          ],
+          "line-dasharray": [1.5, 1]
         }
       },
       {
@@ -550,9 +655,73 @@ function buildStyle(tilejsonUrl, selectedAreaData) {
         paint: {
           "text-color": "#222"
         }
+      },
+      {
+        id: "theme-poi",
+        type: "circle",
+        source: "osm",
+        "source-layer": "theme_poi",
+        minzoom: 13,
+        paint: {
+          "circle-radius": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            13,
+            2.5,
+            16,
+            5
+          ],
+          "circle-color": [
+            "match",
+            ["get", "theme"],
+            "food_drink",
+            "#f97316",
+            "health",
+            "#dc2626",
+            "education",
+            "#2563eb",
+            "public_services",
+            "#7c3aed",
+            "tourism",
+            "#0891b2",
+            "recreation",
+            "#16a34a",
+            "#4b5563"
+          ],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1
+        }
       }
     ]
   };
+  return filterUnavailableOsmStyleLayers(style, options.osmSourceLayers);
+}
+
+function filterUnavailableOsmStyleLayers(style, osmSourceLayers) {
+  if (!(osmSourceLayers instanceof Set)) {
+    return style;
+  }
+  return {
+    ...style,
+    layers: style.layers.filter((layer) => {
+      if (layer.source !== "osm" || !layer["source-layer"]) {
+        return true;
+      }
+      return osmSourceLayers.has(layer["source-layer"]);
+    })
+  };
+}
+
+function extractVectorSourceLayers(tilejson) {
+  if (!Array.isArray(tilejson?.vector_layers)) {
+    return null;
+  }
+  return new Set(
+    tilejson.vector_layers
+      .map((layer) => String(layer?.id || "").trim())
+      .filter(Boolean)
+  );
 }
 
 async function requestJson(url, options = {}, requiresAdmin = false) {
@@ -629,7 +798,7 @@ async function safeLoadSelectedArea() {
   }
 }
 
-async function loadTileJsonView(tilejsonUrl) {
+async function loadTileJsonInfo(tilejsonUrl) {
   try {
     const response = await fetch(tilejsonUrl);
     if (!response.ok) {
@@ -652,10 +821,16 @@ async function loadTileJsonView(tilejsonUrl) {
         ];
       }
     }
-    return nextView;
+    return {
+      view: nextView,
+      sourceLayers: extractVectorSourceLayers(tilejson)
+    };
   } catch (error) {
     console.warn("Falling back to default map view.", error);
-    return fallbackView;
+    return {
+      view: fallbackView,
+      sourceLayers: null
+    };
   }
 }
 
@@ -1087,6 +1262,112 @@ function updateFlightButtons() {
   }
 
   syncFlightMenuState();
+}
+
+function osmMenuElements() {
+  return {
+    controls: document.getElementById("osmControls"),
+    toggle: document.getElementById("osmMenuToggle"),
+    panel: document.getElementById("osmMenuPanel"),
+    buttons: Object.fromEntries(
+      OSM_OVERLAY_GROUPS.map((group) => [group.key, document.getElementById(group.buttonId)])
+    )
+  };
+}
+
+function isOsmSourceLayerAvailable(sourceLayer) {
+  return !(appState.osmSourceLayers instanceof Set) || appState.osmSourceLayers.has(sourceLayer);
+}
+
+function osmOverlayGroupLayerIds(group) {
+  if (!appState.map) {
+    return [];
+  }
+  return group.layerIds.filter((layerId) => appState.map.getLayer(layerId));
+}
+
+function isOsmOverlayGroupAvailable(group) {
+  return group.sourceLayers.some(isOsmSourceLayerAvailable) && osmOverlayGroupLayerIds(group).length > 0;
+}
+
+function getOsmOverlayVisibility(groupKey) {
+  const value = appState.osmOverlayVisibility[groupKey];
+  return typeof value === "boolean" ? value : true;
+}
+
+function setOsmOverlayGroupVisibility(group, visible) {
+  osmOverlayGroupLayerIds(group).forEach((layerId) => {
+    appState.map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+  });
+}
+
+function applyOsmOverlayVisibility() {
+  OSM_OVERLAY_GROUPS.forEach((group) => {
+    if (isOsmOverlayGroupAvailable(group)) {
+      setOsmOverlayGroupVisibility(group, getOsmOverlayVisibility(group.key));
+    }
+  });
+  updateOsmOverlayButtons();
+}
+
+function updateOsmMenuState() {
+  const { controls, toggle, panel, buttons } = osmMenuElements();
+  if (!controls || !toggle || !panel) {
+    return;
+  }
+  controls.dataset.open = appState.osmMenuOpen ? "true" : "false";
+  toggle.setAttribute("aria-expanded", appState.osmMenuOpen ? "true" : "false");
+  panel.setAttribute("aria-hidden", appState.osmMenuOpen ? "false" : "true");
+  if ("inert" in panel) {
+    panel.inert = !appState.osmMenuOpen;
+  }
+  Object.values(buttons).forEach((button) => {
+    if (button) {
+      button.tabIndex = appState.osmMenuOpen && !button.disabled ? 0 : -1;
+    }
+  });
+}
+
+function setOsmMenuState(open) {
+  appState.osmMenuOpen = open;
+  updateOsmMenuState();
+}
+
+function updateOsmOverlayButtons() {
+  const { toggle, buttons } = osmMenuElements();
+  let anyActive = false;
+  let anyAvailable = false;
+  OSM_OVERLAY_GROUPS.forEach((group) => {
+    const button = buttons[group.key];
+    if (!button) {
+      return;
+    }
+    const available = isOsmOverlayGroupAvailable(group);
+    const active = available && getOsmOverlayVisibility(group.key);
+    anyActive = anyActive || active;
+    anyAvailable = anyAvailable || available;
+    button.disabled = !available;
+    button.classList.toggle("active", active);
+    button.classList.toggle("unavailable", !available);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    button.textContent = available ? group.label : `${group.label} (Unavailable)`;
+  });
+  if (toggle) {
+    toggle.dataset.state = anyActive ? "active" : anyAvailable ? "idle" : "unavailable";
+  }
+  updateOsmMenuState();
+}
+
+function toggleOsmOverlayGroup(groupKey) {
+  const group = OSM_OVERLAY_GROUPS.find((candidate) => candidate.key === groupKey);
+  if (!group || !isOsmOverlayGroupAvailable(group)) {
+    return;
+  }
+  const visible = !getOsmOverlayVisibility(group.key);
+  appState.osmOverlayVisibility[group.key] = visible;
+  writeOsmOverlayVisibility();
+  setOsmOverlayGroupVisibility(group, visible);
+  updateOsmOverlayButtons();
 }
 
 function buildFlightRequest(providerKey) {
@@ -2558,7 +2839,10 @@ function closeModal() {
 function bindDomEvents() {
   const flightControls = document.getElementById("flightControls");
   const flightMenuToggle = document.getElementById("flightMenuToggle");
+  const osmControls = document.getElementById("osmControls");
+  const osmMenuToggle = document.getElementById("osmMenuToggle");
   const targetInFlightControls = (target) => Boolean(target && flightControls.contains(target));
+  const targetInOsmControls = (target) => Boolean(target && osmControls.contains(target));
 
   document.getElementById("goBtn").addEventListener("click", () => {
     runSearch();
@@ -2630,6 +2914,12 @@ function bindDomEvents() {
     }
     openFlightMenu({ pinned: true });
   });
+  osmMenuToggle.addEventListener("click", () => {
+    setOsmMenuState(!appState.osmMenuOpen);
+  });
+  OSM_OVERLAY_GROUPS.forEach((group) => {
+    document.getElementById(group.buttonId).addEventListener("click", () => toggleOsmOverlayGroup(group.key));
+  });
   document.getElementById("toggleOpenSky").addEventListener("click", () => toggleFlight("opensky"));
   document.getElementById("toggleAdsbx").addEventListener("click", () => toggleFlight("adsbx"));
   document.getElementById("toggleAisVessels").addEventListener("click", () => toggleVessels());
@@ -2652,6 +2942,16 @@ function bindDomEvents() {
   document.addEventListener("pointerdown", (event) => {
     if (!targetInFlightControls(event.target)) {
       closeFlightMenu();
+    }
+    if (!targetInOsmControls(event.target)) {
+      setOsmMenuState(false);
+    }
+  });
+  osmControls.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOsmMenuState(false);
+      osmMenuToggle.focus();
     }
   });
   if (typeof window.matchMedia === "function") {
@@ -2678,17 +2978,22 @@ function bindDomEvents() {
     }
   }
   syncFlightMenuState();
+  updateOsmMenuState();
   updateFlightDebugOverlay();
 }
 
 async function initMap() {
   const tilejsonUrl = appState.overview?.tilejsonUrl || "/data/openmaptiles.json";
-  const initialView = await loadTileJsonView(tilejsonUrl);
+  const tilejsonInfo = await loadTileJsonInfo(tilejsonUrl);
+  appState.osmSourceLayers = tilejsonInfo.sourceLayers;
+  const initialView = tilejsonInfo.view;
   const currentAreaBounds = resolveCurrentAreaBounds(initialView.bounds);
   renderViewerNotice(Boolean(currentAreaBounds));
   appState.map = new maplibregl.Map({
     container: "map",
-    style: buildStyle(tilejsonUrl, appState.selectedArea.featureCollection),
+    style: buildStyle(tilejsonUrl, appState.selectedArea.featureCollection, {
+      osmSourceLayers: appState.osmSourceLayers
+    }),
     center: initialView.center,
     zoom: initialView.zoom
   });
@@ -2700,6 +3005,7 @@ async function initMap() {
     ensureVesselLayers();
     bindFlightMapInteractions();
     applySelectedAreaOverlay();
+    applyOsmOverlayVisibility();
     if (currentAreaBounds) {
       appState.map.fitBounds(currentAreaBounds, {
         padding: 40,
@@ -2707,6 +3013,7 @@ async function initMap() {
       });
     }
     updateFlightButtons();
+    updateOsmOverlayButtons();
   });
   appState.map.on("moveend", () => {
     if (appState.flightsEnabled.opensky) {
@@ -2725,6 +3032,7 @@ async function init() {
   bindDomEvents();
   await Promise.all([safeLoadOverview(), safeLoadCapabilities(), safeLoadSelectedArea()]);
   updateFlightButtons();
+  updateOsmOverlayButtons();
   await initMap();
 }
 

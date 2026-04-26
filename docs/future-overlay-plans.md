@@ -275,7 +275,7 @@ Add useful offline overlays from local OSM data, such as green space, water, roa
 
 ### Key Constraint
 
-The active Tilemaker resources must be audited first. The checked-in `config/tilemaker/process.lua` is minimal, but fresh installs currently copy upstream Tilemaker resources into the install root. The viewer references OpenMapTiles-style layers that the checked-in fallback does not emit.
+The active Tilemaker resources must be audited first. The repo now owns a conservative `config/tilemaker` profile, but installed systems may still have older copied resources until they run an application update and rebuild. The viewer references OpenMapTiles-style layers and must keep treating source layers as availability-checked optional inputs.
 
 ### Phase 0: Audit
 
@@ -308,6 +308,8 @@ Make `config/tilemaker` repo-owned and deploy it on fresh installs and app updat
 - update `scripts/install-runtime.sh`
 - update `bin/update-app.sh`
 - document that a map rebuild is required after Tilemaker profile changes
+
+Initial implementation notes live in `docs/offline-osm-overlays.md`.
 
 Do not replace OpenMapTiles-compatible layers with the current minimal placeholder. Vendor or derive from the full upstream OpenMapTiles Tilemaker resources, then add thematic layers as additive output.
 
