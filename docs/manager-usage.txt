@@ -36,8 +36,7 @@ Viewer:
 Viewer features:
 - top-left coordinate or address search
 - a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
-- right-side offline OSM layer toggles for source layers present in the current vector tiles
-- right-side layer toggles for OpenSky, ADS-B Exchange, AIS vessels, TomTom traffic, installed offline raster imagery, local terrain/hillshade, and local street imagery when configured
+- one right-side layer menu for OpenSky, ADS-B Exchange, AIS vessels, TomTom traffic, installed offline raster imagery, local terrain/hillshade, local street imagery, and offline OSM layer toggles
 - a disabled-by-default satellite catalog-only status button when cached orbital elements are enabled; v1 does not draw satellite positions
 
 Flight data configuration:

@@ -269,7 +269,6 @@ const appState = {
   },
   osmSourceLayers: null,
   osmOverlayVisibility: readOsmOverlayVisibility(),
-  osmMenuOpen: false,
   imagery: {
     items: [],
     enabled: [],
@@ -1706,7 +1705,7 @@ function syncFlightMenuState() {
     }
     button.tabIndex = appState.flightMenuOpen && !button.disabled ? 0 : -1;
   });
-  document.querySelectorAll("#imageryOverlayControls button").forEach((button) => {
+  document.querySelectorAll("#imageryOverlayControls button, #flightMenuPanel .osm-layer-button").forEach((button) => {
     button.tabIndex = appState.flightMenuOpen && !button.disabled ? 0 : -1;
   });
 }
@@ -1844,9 +1843,6 @@ function updateFlightButtons() {
 
 function osmMenuElements() {
   return {
-    controls: document.getElementById("osmControls"),
-    toggle: document.getElementById("osmMenuToggle"),
-    panel: document.getElementById("osmMenuPanel"),
     buttons: Object.fromEntries(
       OSM_OVERLAY_GROUPS.map((group) => [group.key, document.getElementById(group.buttonId)])
     )
@@ -1889,32 +1885,16 @@ function applyOsmOverlayVisibility() {
 }
 
 function updateOsmMenuState() {
-  const { controls, toggle, panel, buttons } = osmMenuElements();
-  if (!controls || !toggle || !panel) {
-    return;
-  }
-  controls.dataset.open = appState.osmMenuOpen ? "true" : "false";
-  toggle.setAttribute("aria-expanded", appState.osmMenuOpen ? "true" : "false");
-  panel.setAttribute("aria-hidden", appState.osmMenuOpen ? "false" : "true");
-  if ("inert" in panel) {
-    panel.inert = !appState.osmMenuOpen;
-  }
+  const { buttons } = osmMenuElements();
   Object.values(buttons).forEach((button) => {
     if (button) {
-      button.tabIndex = appState.osmMenuOpen && !button.disabled ? 0 : -1;
+      button.tabIndex = appState.flightMenuOpen && !button.disabled ? 0 : -1;
     }
   });
 }
 
-function setOsmMenuState(open) {
-  appState.osmMenuOpen = open;
-  updateOsmMenuState();
-}
-
 function updateOsmOverlayButtons() {
-  const { toggle, buttons } = osmMenuElements();
-  let anyActive = false;
-  let anyAvailable = false;
+  const { buttons } = osmMenuElements();
   OSM_OVERLAY_GROUPS.forEach((group) => {
     const button = buttons[group.key];
     if (!button) {
@@ -1922,17 +1902,12 @@ function updateOsmOverlayButtons() {
     }
     const available = isOsmOverlayGroupAvailable(group);
     const active = available && getOsmOverlayVisibility(group.key);
-    anyActive = anyActive || active;
-    anyAvailable = anyAvailable || available;
     button.disabled = !available;
     button.classList.toggle("active", active);
     button.classList.toggle("unavailable", !available);
     button.setAttribute("aria-pressed", active ? "true" : "false");
     button.textContent = available ? group.label : `${group.label} (Unavailable)`;
   });
-  if (toggle) {
-    toggle.dataset.state = anyActive ? "active" : anyAvailable ? "idle" : "unavailable";
-  }
   updateOsmMenuState();
 }
 
@@ -3500,10 +3475,7 @@ function closeModal() {
 function bindDomEvents() {
   const flightControls = document.getElementById("flightControls");
   const flightMenuToggle = document.getElementById("flightMenuToggle");
-  const osmControls = document.getElementById("osmControls");
-  const osmMenuToggle = document.getElementById("osmMenuToggle");
   const targetInFlightControls = (target) => Boolean(target && flightControls.contains(target));
-  const targetInOsmControls = (target) => Boolean(target && osmControls.contains(target));
 
   document.getElementById("goBtn").addEventListener("click", () => {
     runSearch();
@@ -3575,9 +3547,6 @@ function bindDomEvents() {
     }
     openFlightMenu({ pinned: true });
   });
-  osmMenuToggle.addEventListener("click", () => {
-    setOsmMenuState(!appState.osmMenuOpen);
-  });
   OSM_OVERLAY_GROUPS.forEach((group) => {
     document.getElementById(group.buttonId).addEventListener("click", () => toggleOsmOverlayGroup(group.key));
   });
@@ -3616,16 +3585,6 @@ function bindDomEvents() {
   document.addEventListener("pointerdown", (event) => {
     if (!targetInFlightControls(event.target)) {
       closeFlightMenu();
-    }
-    if (!targetInOsmControls(event.target)) {
-      setOsmMenuState(false);
-    }
-  });
-  osmControls.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setOsmMenuState(false);
-      osmMenuToggle.focus();
     }
   });
   if (typeof window.matchMedia === "function") {

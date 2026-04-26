@@ -60,37 +60,15 @@
           <button class="flight-button unavailable" type="button" disabled tabindex="-1">Imagery unavailable</button>
         </div>
       </div>
-    </div>
-  </div>
-
-  <div id="osmControls" class="osm-controls" data-open="false">
-    <button
-      id="osmMenuToggle"
-      class="osm-menu-toggle"
-      type="button"
-      aria-label="Offline OSM layers"
-      aria-expanded="false"
-      aria-controls="osmMenuPanel"
-      aria-haspopup="true"
-      title="Offline OSM layers"
-    >
-      <span class="osm-menu-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false">
-          <path
-            fill="currentColor"
-            d="M4 5.5 12 2l8 3.5-8 3.5zm0 6L12 8l8 3.5-8 3.5zm0 6L12 14l8 3.5-8 3.5z"
-          />
-        </svg>
-      </span>
-    </button>
-    <div id="osmMenuPanel" class="osm-menu-panel" aria-hidden="true">
-      <div class="osm-menu-title">Offline OSM layers</div>
-      <button id="toggleOsmGreenSpace" class="osm-layer-button" type="button" tabindex="-1">Green space</button>
-      <button id="toggleOsmWater" class="osm-layer-button" type="button" tabindex="-1">Water</button>
-      <button id="toggleOsmRoads" class="osm-layer-button" type="button" tabindex="-1">Roads</button>
-      <button id="toggleOsmBuildings" class="osm-layer-button" type="button" tabindex="-1">Buildings</button>
-      <button id="toggleOsmBoundaries" class="osm-layer-button" type="button" tabindex="-1">Boundaries</button>
-      <button id="toggleOsmPlacesPois" class="osm-layer-button" type="button" tabindex="-1">Places and POIs</button>
+      <div class="layer-menu-section">
+        <div class="layer-menu-heading">Offline OSM layers</div>
+        <button id="toggleOsmGreenSpace" class="flight-button osm-layer-button" type="button" tabindex="-1">Green space</button>
+        <button id="toggleOsmWater" class="flight-button osm-layer-button" type="button" tabindex="-1">Water</button>
+        <button id="toggleOsmRoads" class="flight-button osm-layer-button" type="button" tabindex="-1">Roads</button>
+        <button id="toggleOsmBuildings" class="flight-button osm-layer-button" type="button" tabindex="-1">Buildings</button>
+        <button id="toggleOsmBoundaries" class="flight-button osm-layer-button" type="button" tabindex="-1">Boundaries</button>
+        <button id="toggleOsmPlacesPois" class="flight-button osm-layer-button" type="button" tabindex="-1">Places and POIs</button>
+      </div>
     </div>
   </div>
 
