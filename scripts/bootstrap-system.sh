@@ -34,6 +34,10 @@ apt-get install -y \
   rapidjson-dev \
   osmium-tool \
   python3 \
+  gdal-bin \
+  python3-gdal \
+  python3-numpy \
+  python3-pil \
   python3-venv \
   python3-pip \
   python3-setuptools \

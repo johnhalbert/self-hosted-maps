@@ -4,6 +4,7 @@
 
 - Static world land fallback data is vendored in `assets/world-land.geojson`. Source and regeneration details live in `docs/world-land.md`.
 - Curated U.S. state display-boundary overrides are vendored in `assets/us-state-display-boundary-index.json`. Source and regeneration details live in `docs/us-state-display-boundaries.md`.
+- Optional offline terrain and hillshade artifacts live under the data root, not app assets. Install details live in `docs/terrain.md`.
 - This repo expects LF line endings. Avoid switching the same checkout back and forth between Windows Git and WSL Git; if you need both, use separate clones or worktrees.
 
 ## Runtime Configuration
@@ -32,6 +33,10 @@ SHM_TOMTOM_API_KEY="your-tomtom-key"
 ```
 
 TomTom tiles are proxied through `/api/traffic/tomtom/...` so the browser never receives the API key. Restart `self-hosted-maps-api` after changing these runtime settings.
+
+## Offline Terrain
+
+Terrain and hillshade are disabled until a matching local raster-dem artifact is installed under `/var/lib/self-hosted-maps/current/terrain`. The API advertises terrain only when its manifest matches the current map `selected_hash` and `dataset_ids`, so stale terrain is hidden after vector map changes. Small local DEMs can be converted with `bin/build-terrain-tiles.py`; see `docs/terrain.md`.
 
 ## Application Updates
 

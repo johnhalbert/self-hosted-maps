@@ -66,7 +66,17 @@ ensure_state_file() {
     "selected_hash": null,
     "artifact_path": null,
     "rebuilt_at": null,
-    "dataset_ids": []
+    "dataset_ids": [],
+    "terrain": {
+      "available": false,
+      "manifest_path": null,
+      "reason": "not_installed",
+      "contours": {
+        "available": false,
+        "enabled": false,
+        "reason": "deferred"
+      }
+    }
   },
   "bootstrap": {}
 }

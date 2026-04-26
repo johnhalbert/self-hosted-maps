@@ -10,6 +10,7 @@ ln -sf "${SHM_INSTALL_ROOT}/bin/map-manager.sh" /usr/local/bin/self-hosted-maps-
 ln -sf "${SHM_INSTALL_ROOT}/bin/rebuild-selected.sh" /usr/local/bin/self-hosted-maps-rebuild
 ln -sf "${SHM_INSTALL_ROOT}/bin/refresh-catalog.sh" /usr/local/bin/self-hosted-maps-refresh-catalog
 ln -sf "${SHM_INSTALL_ROOT}/bin/list-installed.sh" /usr/local/bin/self-hosted-maps-list-installed
+ln -sf "${SHM_INSTALL_ROOT}/bin/install-terrain-tiles.sh" /usr/local/bin/self-hosted-maps-install-terrain
 ln -sf "${SHM_INSTALL_ROOT}/bin/update-app.sh" /usr/local/bin/self-hosted-maps-update-app
 
 install -m 0644 "${SHM_REPO_ROOT}/docs/manager-usage.txt" "${SHM_CONFIG_ROOT}/manager-usage.txt"

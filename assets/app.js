@@ -37,6 +37,9 @@ const TRAFFIC_LAYERS = {
     opacity: 0.9
   }
 };
+const TERRAIN_SOURCE_ID = "local-terrain-dem";
+const TERRAIN_HILLSHADE_LAYER_ID = "local-terrain-hillshade";
+const TERRAIN_EXAGGERATION = 1.15;
 const FLIGHT_PROVIDER_ALIASES = {
   opensky: "opensky",
   adsbx: "adsbx",
@@ -140,6 +143,9 @@ const appState = {
     tomTomTrafficConfigured: false,
     tomTomTrafficFlowEnabled: false,
     tomTomTrafficIncidentsEnabled: false,
+    terrainAvailable: false,
+    hillshadeAvailable: false,
+    contoursAvailable: false,
     adminTokenRequired: false
   },
   datasets: [],
@@ -185,6 +191,8 @@ const appState = {
     flow: false,
     incidents: false
   },
+  terrainEnabled: false,
+  hillshadeEnabled: false,
   suppressFlightPopupClose: false,
   prefersReducedMotion: reducedMotionEnabled(),
   flightMenuOpen: false,
@@ -607,7 +615,13 @@ async function safeLoadOverview() {
       currentIds: [],
       selectedIds: [],
       currentIsStale: false,
-      missingCurrentDatasetIds: []
+      missingCurrentDatasetIds: [],
+      terrain: {
+        terrainAvailable: false,
+        hillshadeAvailable: false,
+        contoursAvailable: false,
+        terrainTileTemplate: null
+      }
     };
   }
 }
@@ -966,6 +980,84 @@ function setTrafficLayerVisibility(kind, visible) {
   }
 }
 
+function terrainMetadata() {
+  return appState.overview?.terrain || {};
+}
+
+function isTerrainAvailable() {
+  return Boolean(appState.capabilities.terrainAvailable && terrainMetadata().terrainAvailable);
+}
+
+function isHillshadeAvailable() {
+  return Boolean(appState.capabilities.hillshadeAvailable && terrainMetadata().hillshadeAvailable);
+}
+
+function ensureTerrainSourceAndLayers() {
+  if (!appState.map || !appState.map.isStyleLoaded() || !isTerrainAvailable()) {
+    return false;
+  }
+
+  const terrain = terrainMetadata();
+  if (!terrain.terrainTileTemplate) {
+    return false;
+  }
+
+  if (!appState.map.getSource(TERRAIN_SOURCE_ID)) {
+    appState.map.addSource(TERRAIN_SOURCE_ID, {
+      type: "raster-dem",
+      tiles: [terrain.terrainTileTemplate],
+      tileSize: terrain.tileSize || 256,
+      minzoom: terrain.minzoom ?? 0,
+      maxzoom: terrain.maxzoom ?? 14,
+      encoding: terrain.encoding || "terrarium",
+      attribution: terrain.attribution || ""
+    });
+  }
+
+  if (!appState.map.getLayer(TERRAIN_HILLSHADE_LAYER_ID)) {
+    const beforeId = appState.map.getLayer("water-label") ? "water-label" : undefined;
+    appState.map.addLayer(
+      {
+        id: TERRAIN_HILLSHADE_LAYER_ID,
+        type: "hillshade",
+        source: TERRAIN_SOURCE_ID,
+        layout: { visibility: appState.hillshadeEnabled ? "visible" : "none" },
+        paint: {
+          "hillshade-exaggeration": 0.42,
+          "hillshade-shadow-color": "#475569",
+          "hillshade-highlight-color": "#f8fafc",
+          "hillshade-accent-color": "#94a3b8"
+        }
+      },
+      beforeId
+    );
+  }
+  return true;
+}
+
+function setTerrain3dVisibility(visible) {
+  if (!appState.map || typeof appState.map.setTerrain !== "function") {
+    showMessage("3D terrain is not supported by this MapLibre build.", "warn");
+    appState.terrainEnabled = false;
+    return;
+  }
+  if (visible && !ensureTerrainSourceAndLayers()) {
+    appState.terrainEnabled = false;
+    return;
+  }
+  appState.map.setTerrain(visible ? { source: TERRAIN_SOURCE_ID, exaggeration: TERRAIN_EXAGGERATION } : null);
+}
+
+function setHillshadeVisibility(visible) {
+  if (visible && !ensureTerrainSourceAndLayers()) {
+    appState.hillshadeEnabled = false;
+    return;
+  }
+  if (appState.map?.getLayer(TERRAIN_HILLSHADE_LAYER_ID)) {
+    appState.map.setLayoutProperty(TERRAIN_HILLSHADE_LAYER_ID, "visibility", visible ? "visible" : "none");
+  }
+}
+
 function flightMenuElements() {
   return {
     controls: document.getElementById("flightControls"),
@@ -976,7 +1068,9 @@ function flightMenuElements() {
       adsbx: document.getElementById(flightProviders.adsbx.buttonId),
       aisstream: document.getElementById("toggleAisVessels"),
       trafficFlow: document.getElementById(TRAFFIC_LAYERS.flow.buttonId),
-      trafficIncidents: document.getElementById(TRAFFIC_LAYERS.incidents.buttonId)
+      trafficIncidents: document.getElementById(TRAFFIC_LAYERS.incidents.buttonId),
+      terrain3d: document.getElementById("toggleTerrain3d"),
+      hillshade: document.getElementById("toggleHillshade")
     }
   };
 }
@@ -1075,14 +1169,35 @@ function updateFlightButtons() {
     button.textContent = available ? config.label : `${config.label} (Unavailable)`;
   });
 
+  if (buttons.terrain3d) {
+    const available = isTerrainAvailable();
+    buttons.terrain3d.disabled = !available;
+    buttons.terrain3d.classList.toggle("active", available && appState.terrainEnabled);
+    buttons.terrain3d.classList.toggle("unavailable", !available);
+    buttons.terrain3d.setAttribute("aria-pressed", available && appState.terrainEnabled ? "true" : "false");
+    buttons.terrain3d.textContent = available ? "3D terrain" : "3D terrain (Unavailable)";
+  }
+
+  if (buttons.hillshade) {
+    const available = isHillshadeAvailable();
+    buttons.hillshade.disabled = !available;
+    buttons.hillshade.classList.toggle("active", available && appState.hillshadeEnabled);
+    buttons.hillshade.classList.toggle("unavailable", !available);
+    buttons.hillshade.setAttribute("aria-pressed", available && appState.hillshadeEnabled ? "true" : "false");
+    buttons.hillshade.textContent = available ? "Hillshade" : "Hillshade (Unavailable)";
+  }
+
   if (toggle) {
     const anyActive =
       Object.keys(flightProviders).some((providerKey) => appState.flightsEnabled[providerKey]) ||
       appState.vesselsEnabled ||
-      Object.values(appState.trafficEnabled).some(Boolean);
+      Object.values(appState.trafficEnabled).some(Boolean) ||
+      appState.terrainEnabled ||
+      appState.hillshadeEnabled;
     const anyAvailable = Object.keys(flightProviders).some((providerKey) =>
       isFlightProviderAvailable(providerKey)
-    ) || isVesselProviderAvailable() || Object.keys(TRAFFIC_LAYERS).some((kind) => isTrafficLayerAvailable(kind));
+    ) || isVesselProviderAvailable() || Object.keys(TRAFFIC_LAYERS).some((kind) => isTrafficLayerAvailable(kind)) ||
+      isTerrainAvailable() || isHillshadeAvailable();
     toggle.dataset.state = anyActive ? "active" : anyAvailable ? "idle" : "unavailable";
   }
 
@@ -2090,6 +2205,32 @@ function toggleTrafficLayer(kind) {
   updateFlightButtons();
 }
 
+function toggleTerrain3d() {
+  if (!isTerrainAvailable()) {
+    return;
+  }
+  if (!appState.map || !appState.map.isStyleLoaded()) {
+    showMessage("Map is still loading. Try again in a moment.", "warn");
+    return;
+  }
+  appState.terrainEnabled = !appState.terrainEnabled;
+  setTerrain3dVisibility(appState.terrainEnabled);
+  updateFlightButtons();
+}
+
+function toggleHillshade() {
+  if (!isHillshadeAvailable()) {
+    return;
+  }
+  if (!appState.map || !appState.map.isStyleLoaded()) {
+    showMessage("Map is still loading. Try again in a moment.", "warn");
+    return;
+  }
+  appState.hillshadeEnabled = !appState.hillshadeEnabled;
+  setHillshadeVisibility(appState.hillshadeEnabled);
+  updateFlightButtons();
+}
+
 function ensureVesselPopup() {
   if (appState.vesselPopup) {
     return appState.vesselPopup;
@@ -2303,6 +2444,10 @@ function renderOverviewSummary() {
   const displayBoundaryIds = selectedArea.displayBoundaryIds || [];
   const providerFallbackIds = selectedArea.providerFallbackIds || [];
   const missingItems = selectedArea.missingItems || [];
+  const terrain = overview.terrain || {};
+  const terrainSummary = terrain.terrainAvailable
+    ? `Terrain and hillshade available (${terrain.encoding || "unknown encoding"}, z${terrain.minzoom}-${terrain.maxzoom})`
+    : `Terrain unavailable${terrain.reason ? ` (${terrain.reason})` : ""}`;
   const boundarySummary = selectedIds.length
     ? `${
         availableBoundaryIds.length
@@ -2330,6 +2475,10 @@ function renderOverviewSummary() {
     <div class="summary-row">
       <strong>Selected boundary overlay</strong>
       <div>${boundarySummary}</div>
+    </div>
+    <div class="summary-row">
+      <strong>Terrain</strong>
+      <div>${terrainSummary}</div>
     </div>
   `;
 }
@@ -2635,6 +2784,8 @@ function bindDomEvents() {
   document.getElementById("toggleAisVessels").addEventListener("click", () => toggleVessels());
   document.getElementById("toggleTrafficFlow").addEventListener("click", () => toggleTrafficLayer("flow"));
   document.getElementById("toggleTrafficIncidents").addEventListener("click", () => toggleTrafficLayer("incidents"));
+  document.getElementById("toggleTerrain3d").addEventListener("click", () => toggleTerrain3d());
+  document.getElementById("toggleHillshade").addEventListener("click", () => toggleHillshade());
   document.getElementById("catalogResults").addEventListener("click", (event) => {
     const button = event.target.closest("[data-install-id]");
     if (!button) {

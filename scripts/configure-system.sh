@@ -29,6 +29,7 @@ sed -i "s|__FONTS_ROOT__|${FONTS_ROOT}|g" "${SHM_CONFIG_ROOT}/tileserver-config.
 
 install -m 0644 "${SHM_REPO_ROOT}/config/nginx-viewer.conf" /etc/nginx/sites-available/self-hosted-maps-viewer
 sed -i "s|__INSTALL_ROOT__|${SHM_INSTALL_ROOT}|g" /etc/nginx/sites-available/self-hosted-maps-viewer
+sed -i "s|__DATA_ROOT__|${SHM_DATA_ROOT}|g" /etc/nginx/sites-available/self-hosted-maps-viewer
 
 ln -sf /etc/nginx/sites-available/self-hosted-maps-viewer /etc/nginx/sites-enabled/self-hosted-maps-viewer
 rm -f /etc/nginx/sites-enabled/default
