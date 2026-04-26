@@ -8,6 +8,7 @@
 - Offline raster imagery overlays can be installed from licensed raster MBTiles. Usage and licensing requirements live in `docs/imagery-overlays.md`.
 - Optional offline terrain and hillshade artifacts live under the data root, not app assets. Install details live in `docs/terrain.md`.
 - Disabled-by-default local street imagery support is documented in `docs/local-street-imagery.md`.
+- Cached satellite orbital elements are documented in `docs/satellites.md`. The v1 implementation is disabled by default and cache/catalog only; it does not draw satellite positions.
 - This repo expects LF line endings. Avoid switching the same checkout back and forth between Windows Git and WSL Git; if you need both, use separate clones or worktrees.
 
 ## Runtime Configuration
@@ -60,6 +61,18 @@ SHM_STREET_IMAGERY_ROOT="/var/lib/self-hosted-maps/street-imagery"
 
 The browser uses `/api/street-imagery/...` item ids and never sends local file paths or URLs. Street imagery admin operations require `SHM_ADMIN_TOKEN` to be set. Panoramax remains deferred/third-party-only and Google/Mapillary offline modes are not implemented.
 If `SHM_STREET_IMAGERY_ROOT` is customized, it must still resolve under `SHM_DATA_ROOT`.
+
+## Cached Satellite Elements
+
+Cached satellite orbital elements are disabled by default and require local admin refresh/import before any catalog data is available:
+
+```sh
+SHM_SATELLITES_ENABLED="1"
+SHM_SATELLITES_CELESTRAK_GROUP="active"
+SHM_ADMIN_TOKEN="set-a-token-before-refresh-or-import"
+```
+
+This is OMM-first cache/catalog support under `${SHM_DATA_ROOT}/cache/satellites`; Space-Track and orbital propagation are not included in v1.
 
 ## Application Updates
 

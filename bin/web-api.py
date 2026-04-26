@@ -89,6 +89,10 @@ STREET_IMAGERY_BLOCKED_STATES = {"active", "requested", "removed", "private", "s
 class NotFoundError(Exception):
     pass
 
+if str(BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(BIN_DIR))
+import satellite_cache
+
 
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
@@ -1089,6 +1093,7 @@ def build_capabilities():
     tomtom_enabled = env_bool("SHM_TOMTOM_TRAFFIC_ENABLED", False) and bool(tomtom_key)
     terrain = build_terrain_metadata()
     street_imagery_enabled = env_bool("SHM_STREET_IMAGERY_ENABLED", False)
+    satellite_catalog_enabled = env_bool("SHM_SATELLITES_ENABLED", False)
     return {
         "addressSearchEnabled": env_bool("SHM_ADDRESS_SEARCH_ENABLED", True),
         "openSkyEnabled": env_bool("SHM_OPENSKY_ENABLED", True),
@@ -1109,8 +1114,22 @@ def build_capabilities():
         "streetImageryMaxBboxArea": street_imagery_max_bbox_area(),
         "panoramaxEnabled": False,
         "panoramaxMode": "deferred-third-party-only",
+        "satelliteCatalogEnabled": satellite_catalog_enabled,
+        "satellitePropagationEnabled": False,
         "adminTokenRequired": bool(os.environ.get("SHM_ADMIN_TOKEN", "").strip()),
     }
+
+
+def satellites_enabled():
+    return env_bool("SHM_SATELLITES_ENABLED", False)
+
+
+def build_satellite_catalog_response():
+    return satellite_cache.catalog_response(satellites_enabled())
+
+
+def build_satellite_elements_response(query):
+    return satellite_cache.elements_response(satellites_enabled(), query)
 
 
 def http_get_json(url: str, headers=None, timeout: int = 15):
@@ -2992,9 +3011,21 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return json.loads(raw.decode("utf-8"))
 
-    def _require_admin(self):
+    def _require_admin(self, require_configured=False):
         token = os.environ.get("SHM_ADMIN_TOKEN", "").strip()
         if not token:
+            if require_configured:
+                self._send_json(
+                    403,
+                    json_response(
+                        False,
+                        error={
+                            "code": "admin_token_not_configured",
+                            "message": "Set SHM_ADMIN_TOKEN before using this administrative endpoint.",
+                        },
+                    ),
+                )
+                return False
             return True
         auth_header = self.headers.get("Authorization", "").strip()
         token_header = self.headers.get("X-SHM-Admin-Token", "").strip()
@@ -3105,6 +3136,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_bytes(200, media["body"], media["contentType"], media["headers"])
                 else:
                     self._send_json(404, json_response(False, error={"code": "not_found", "message": "Not found."}))
+            elif path == "/api/satellites/catalog":
+                self._send_json(200, json_response(True, build_satellite_catalog_response()))
+            elif path == "/api/satellites/elements":
+                self._send_json(200, json_response(True, build_satellite_elements_response(query)))
             elif path == "/api/vessels/aisstream" or path == "/api/ais":
                 self._send_json(200, json_response(True, fetch_aisstream_vessels(query)))
             elif path == "/api/vessels/detail":
@@ -3214,10 +3249,11 @@ class Handler(BaseHTTPRequestHandler):
         if not path.startswith("/api/admin/"):
             self._send_json(404, json_response(False, error={"code": "not_found", "message": "Not found."}))
             return
+        require_configured_admin = path in {"/api/admin/satellites/refresh", "/api/admin/satellites/import"}
         if path.startswith("/api/admin/street-imagery/"):
             if not self._require_owner_admin():
                 return
-        elif not self._require_admin():
+        elif not self._require_admin(require_configured=require_configured_admin):
             return
 
         try:
@@ -3232,6 +3268,32 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/admin/refresh-catalog":
                 job = JOB_STORE.create("refresh_catalog", ["bash", str(BIN_DIR / "refresh-catalog.sh")])
+            elif path == "/api/admin/satellites/refresh":
+                group = str(payload.get("group") or "").strip()
+                command = [sys.executable, str(BIN_DIR / "satellite_cache.py"), "refresh"]
+                if group:
+                    satellite_cache.validate_group(group)
+                    command.extend(["--group", group])
+                job = JOB_STORE.create("refresh_satellites", command)
+            elif path == "/api/admin/satellites/import":
+                source_file = str(payload.get("sourceFile") or "").strip()
+                if not source_file:
+                    raise ValueError("sourceFile is required.")
+                group = str(payload.get("group") or "local").strip()
+                satellite_cache.validate_group(group)
+                source_label = str(payload.get("sourceLabel") or "").strip()
+                command = [
+                    sys.executable,
+                    str(BIN_DIR / "satellite_cache.py"),
+                    "import",
+                    "--file",
+                    source_file,
+                    "--group",
+                    group,
+                ]
+                if source_label:
+                    command.extend(["--source-label", source_label])
+                job = JOB_STORE.create("import_satellites", command)
             elif path == "/api/admin/install":
                 dataset_id = (payload.get("datasetId") or "").strip()
                 if not dataset_id:

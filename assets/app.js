@@ -220,6 +220,8 @@ const appState = {
     contoursAvailable: false,
     streetImageryEnabled: false,
     streetImageryConfigured: false,
+    satelliteCatalogEnabled: false,
+    satellitePropagationEnabled: false,
     adminTokenRequired: false
   },
   datasets: [],
@@ -284,6 +286,7 @@ const appState = {
     selectedItemId: null,
     selectedItem: null
   },
+  satelliteCatalogVisible: false,
   suppressFlightPopupClose: false,
   prefersReducedMotion: reducedMotionEnabled(),
   flightMenuOpen: false,
@@ -1662,7 +1665,8 @@ function flightMenuElements() {
       trafficIncidents: document.getElementById(TRAFFIC_LAYERS.incidents.buttonId),
       terrain3d: document.getElementById("toggleTerrain3d"),
       hillshade: document.getElementById("toggleHillshade"),
-      streetImagery: document.getElementById("toggleStreetImagery")
+      streetImagery: document.getElementById("toggleStreetImagery"),
+      satelliteCatalog: document.getElementById("showSatelliteCatalog")
     }
   };
 }
@@ -1677,6 +1681,10 @@ function isVesselProviderAvailable() {
 
 function isTrafficLayerAvailable(kind) {
   return Boolean(appState.capabilities[TRAFFIC_LAYERS[kind]?.capabilityKey]);
+}
+
+function isSatelliteCatalogAvailable() {
+  return Boolean(appState.capabilities.satelliteCatalogEnabled);
 }
 
 function syncFlightMenuState() {
@@ -1796,6 +1804,21 @@ function updateFlightButtons() {
     buttons.streetImagery.textContent = available ? "Street imagery" : "Street imagery (Unavailable)";
   }
 
+  if (buttons.satelliteCatalog) {
+    const available = isSatelliteCatalogAvailable();
+    buttons.satelliteCatalog.disabled = !available;
+    buttons.satelliteCatalog.classList.toggle("active", available && appState.satelliteCatalogVisible);
+    buttons.satelliteCatalog.classList.toggle("unavailable", !available);
+    buttons.satelliteCatalog.setAttribute(
+      "aria-pressed",
+      available && appState.satelliteCatalogVisible ? "true" : "false"
+    );
+    buttons.satelliteCatalog.textContent = available
+      ? "Satellite catalog only"
+      : "Satellite catalog only (Unavailable)";
+    buttons.satelliteCatalog.title = "Cached orbital elements only; v1 does not calculate or draw positions.";
+  }
+
   if (toggle) {
     const imageryAvailable = appState.imagery.items.some((item) => item.available);
     const terrainAvailable = isTerrainAvailable();
@@ -1807,11 +1830,12 @@ function updateFlightButtons() {
       Boolean(appState.imagery.activeId) ||
       appState.terrainEnabled ||
       appState.hillshadeEnabled ||
-      appState.streetImagery.enabled;
+      appState.streetImagery.enabled ||
+      appState.satelliteCatalogVisible;
     const anyAvailable = Object.keys(flightProviders).some((providerKey) =>
       isFlightProviderAvailable(providerKey)
     ) || isVesselProviderAvailable() || Object.keys(TRAFFIC_LAYERS).some((kind) => isTrafficLayerAvailable(kind)) ||
-      imageryAvailable || terrainAvailable || hillshadeAvailable || isStreetImageryAvailable();
+      imageryAvailable || terrainAvailable || hillshadeAvailable || isStreetImageryAvailable() || isSatelliteCatalogAvailable();
     toggle.dataset.state = anyActive ? "active" : anyAvailable ? "idle" : "unavailable";
   }
 
@@ -2969,6 +2993,37 @@ function toggleHillshade() {
   updateFlightButtons();
 }
 
+async function showSatelliteCatalogStatus() {
+  if (!isSatelliteCatalogAvailable()) {
+    return;
+  }
+  appState.satelliteCatalogVisible = true;
+  updateFlightButtons();
+  try {
+    const [catalog, elements] = await Promise.all([
+      requestJson("/api/satellites/catalog"),
+      requestJson("/api/satellites/elements?limit=1")
+    ]);
+    if (!catalog.cachePresent) {
+      showMessage("Satellite catalog cache only: enabled, but no cached OMM elements are available yet.", "warn");
+      return;
+    }
+    const manifest = catalog.manifest || {};
+    const source = manifest.source || {};
+    const sourceLabel =
+      source.type === "local-import" ? source.label || source.fileName || "local import" : "CelesTrak GP";
+    const staleState = manifest.staleness?.state || "unknown";
+    showMessage(
+      `Satellite catalog only: ${elements.count} cached OMM element${
+        elements.count === 1 ? "" : "s"
+      } from ${sourceLabel}; staleness ${staleState}. No map positions are calculated in v1.`,
+      staleState === "fresh" ? "info" : "warn"
+    );
+  } catch (error) {
+    showMessage(error.message, "warn");
+  }
+}
+
 function ensureVesselPopup() {
   if (appState.vesselPopup) {
     return appState.vesselPopup;
@@ -3541,6 +3596,9 @@ function bindDomEvents() {
   document.getElementById("toggleTerrain3d").addEventListener("click", () => toggleTerrain3d());
   document.getElementById("toggleHillshade").addEventListener("click", () => toggleHillshade());
   document.getElementById("toggleStreetImagery").addEventListener("click", () => toggleStreetImagery());
+  document.getElementById("showSatelliteCatalog").addEventListener("click", () => {
+    showSatelliteCatalogStatus();
+  });
   document.getElementById("catalogResults").addEventListener("click", (event) => {
     const button = event.target.closest("[data-install-id]");
     if (!button) {

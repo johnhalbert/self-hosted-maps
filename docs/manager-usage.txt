@@ -38,6 +38,7 @@ Viewer features:
 - a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
 - right-side offline OSM layer toggles for source layers present in the current vector tiles
 - right-side layer toggles for OpenSky, ADS-B Exchange, AIS vessels, TomTom traffic, installed offline raster imagery, local terrain/hillshade, and local street imagery when configured
+- a disabled-by-default satellite catalog-only status button when cached orbital elements are enabled; v1 does not draw satellite positions
 
 Flight data configuration:
 - OpenSky works anonymously by default. For authenticated REST API access, set SHM_OPENSKY_CLIENT_ID and SHM_OPENSKY_CLIENT_SECRET in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
@@ -68,6 +69,11 @@ Local street imagery configuration:
 - Public viewer APIs expose only publishable/redacted records and API media URLs; they do not expose local paths.
 - Street imagery admin operations require SHM_ADMIN_TOKEN to be set and supplied with the request.
 - Panoramax is deferred/third-party-only. Google and Mapillary offline imagery are not implemented.
+
+Satellite element cache configuration:
+- Satellite orbital element catalog support is disabled by default and cache/catalog only. Set SHM_SATELLITES_ENABLED=1 to expose cached OMM metadata in the local API and viewer status button.
+- CelesTrak refresh and local OMM import write under /var/lib/self-hosted-maps/cache/satellites by default and require SHM_ADMIN_TOKEN when triggered through /api/admin/satellites/refresh or /api/admin/satellites/import.
+- Space-Track and orbital propagation are not included in v1.
 
 Manager capabilities:
 - browse the live catalog
