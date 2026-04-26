@@ -238,8 +238,41 @@ body {
     visibility 0s linear 180ms;
 }
 
+.layer-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.layer-menu-section + .layer-menu-section {
+  padding-top: 8px;
+  border-top: 1px solid rgba(17, 24, 39, 0.12);
+}
+
+.layer-menu-heading {
+  color: #4b5563;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.imagery-overlay-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.imagery-license {
+  display: block;
+  margin-top: 3px;
+  color: #6b7280;
+  font-size: 11px;
+  white-space: normal;
+}
+
 .flight-controls[data-open="true"] .flight-menu-panel {
-  max-width: 220px;
+  max-width: 260px;
   opacity: 1;
   padding: 10px;
   transform: translateX(0);

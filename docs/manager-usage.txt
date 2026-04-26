@@ -12,6 +12,9 @@ Useful commands:
   self-hosted-maps-rebuild
   self-hosted-maps-refresh-catalog
   self-hosted-maps-list-installed
+  self-hosted-maps-install-imagery
+  self-hosted-maps-list-imagery
+  self-hosted-maps-remove-imagery
   self-hosted-maps-update-app
 
 State file:
@@ -20,6 +23,9 @@ State file:
 Current served tileset:
   /var/lib/self-hosted-maps/current/openmaptiles.mbtiles
 
+Offline imagery root:
+  /var/lib/self-hosted-maps/imagery
+
 Viewer:
   http://<server-ip>/
 
@@ -27,7 +33,7 @@ Viewer features:
 - top-left coordinate or address search
 - a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
 - right-side offline OSM layer toggles for source layers present in the current vector tiles
-- right-side live overlay toggles for OpenSky, ADS-B Exchange, AIS vessels, and TomTom traffic when configured
+- right-side live overlay toggles for OpenSky, ADS-B Exchange, AIS vessels, TomTom traffic, and installed offline raster imagery when configured
 
 Flight data configuration:
 - OpenSky works anonymously by default. For authenticated REST API access, set SHM_OPENSKY_CLIENT_ID and SHM_OPENSKY_CLIENT_SECRET in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
@@ -39,6 +45,12 @@ Vessel and traffic data configuration:
 - TomTom traffic flow and incident overlays are disabled by default. Set SHM_TOMTOM_TRAFFIC_ENABLED=1 and SHM_TOMTOM_API_KEY in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
 - Provider keys stay server-side; the browser uses local /api proxy URLs. Restart self-hosted-maps-api after changing runtime live-layer credentials.
 
+Offline imagery configuration:
+- Install only raster MBTiles imagery that permits local storage and serving.
+- Required install fields are id, name, MBTiles path, attribution, and license name.
+- Example: self-hosted-maps-install-imagery naip-local "NAIP local" /path/to/tiles.mbtiles --attribution "Provider attribution" --license-name "License name"
+- The API serves /api/imagery, raw /api/imagery/<id>.json TileJSON, and /api/imagery/<id>/<z>/<x>/<y>.<png|jpg|webp> tile bytes.
+
 Manager capabilities:
 - browse the live catalog
 - install additional datasets over time
@@ -46,6 +58,7 @@ Manager capabilities:
 - inspect installed dataset details
 - check for dataset updates
 - redownload a dataset via the update action
+- install, list, and remove licensed offline raster imagery overlays with direct commands
 - choose selected datasets for the next rebuild
 - rebuild the served map explicitly
 - update the installed application from a local source checkout

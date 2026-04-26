@@ -32,6 +32,7 @@ SHM_BBBIKE_INDEX_HTML="${SHM_BBBIKE_INDEX_HTML:-${SHM_CATALOG_DIR}/bbbike-index.
 SHM_NORMALIZED_CATALOG="${SHM_NORMALIZED_CATALOG:-${SHM_CATALOG_DIR}/catalog.json}"
 SHM_CATALOG_BOUNDARY_INDEX="${SHM_CATALOG_BOUNDARY_INDEX:-${SHM_CATALOG_DIR}/geofabrik-boundary-index.json}"
 SHM_DATASETS_DIR="${SHM_DATASETS_DIR:-${SHM_DATA_ROOT}/datasets}"
+SHM_IMAGERY_ROOT="${SHM_IMAGERY_ROOT:-${SHM_DATA_ROOT}/imagery}"
 SHM_SELECTED_BUILD_DIR="${SHM_SELECTED_BUILD_DIR:-${SHM_DATA_ROOT}/builds/selected}"
 SHM_LOCK_DIR="${SHM_LOCK_DIR:-${SHM_DATA_ROOT}/locks}"
 SHM_MUTATION_LOCK_FILE="${SHM_MUTATION_LOCK_FILE:-${SHM_LOCK_DIR}/mutation.lock}"
@@ -48,7 +49,7 @@ require_cmd() {
 }
 
 ensure_state_file() {
-  mkdir -p "$SHM_CONFIG_ROOT" "$SHM_CATALOG_DIR" "$SHM_DATASETS_DIR" "$SHM_SELECTED_BUILD_DIR" "$SHM_LOG_ROOT" "$SHM_LOCK_DIR"
+  mkdir -p "$SHM_CONFIG_ROOT" "$SHM_CATALOG_DIR" "$SHM_DATASETS_DIR" "$SHM_IMAGERY_ROOT" "$SHM_SELECTED_BUILD_DIR" "$SHM_LOG_ROOT" "$SHM_LOCK_DIR"
   if [[ ! -f "$SHM_STATE_FILE" ]]; then
     cat > "$SHM_STATE_FILE" <<'JSON'
 {
@@ -62,6 +63,12 @@ ensure_state_file() {
   },
   "installed": {},
   "selected": [],
+  "imagery": {
+    "schema_version": 1,
+    "installed": {},
+    "order": [],
+    "enabled": []
+  },
   "current": {
     "selected_hash": null,
     "artifact_path": null,
@@ -72,6 +79,25 @@ ensure_state_file() {
 }
 JSON
   fi
+}
+
+ensure_imagery_state() {
+  require_cmd jq
+  ensure_state_file
+  local state_tmp
+  state_tmp="$(mktemp)"
+  jq '
+    .imagery = ({
+      schema_version: 1,
+      installed: {},
+      order: [],
+      enabled: []
+    } + (.imagery // {}))
+    | if (.imagery.installed | type) != "object" then .imagery.installed = {} else . end
+    | if (.imagery.order | type) != "array" then .imagery.order = [] else . end
+    | if (.imagery.enabled | type) != "array" then .imagery.enabled = [] else . end
+  ' "$SHM_STATE_FILE" > "$state_tmp"
+  mv "$state_tmp" "$SHM_STATE_FILE"
 }
 
 acquire_mutation_lock() {
