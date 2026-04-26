@@ -520,6 +520,8 @@ Tests should cover:
 
 Provide offline-capable satellite context from cached orbital elements, with honest “estimated” labeling and staleness metadata.
 
+Implementation note: the v1 cache/catalog portion is implemented as disabled-by-default OMM JSON refresh/import and read-only catalog APIs. Propagation, map points, ground tracks, passes, and footprints remain future phase work.
+
 ### Scope
 
 Version 1 should be OMM-first cache/import infrastructure. It should not claim live satellite tracking. Viewer-rendered orbital points require a propagation choice; if that is not selected in the same phase, v1 should expose cache/catalog status only.

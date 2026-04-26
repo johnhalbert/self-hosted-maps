@@ -4,6 +4,7 @@
 
 - Static world land fallback data is vendored in `assets/world-land.geojson`. Source and regeneration details live in `docs/world-land.md`.
 - Curated U.S. state display-boundary overrides are vendored in `assets/us-state-display-boundary-index.json`. Source and regeneration details live in `docs/us-state-display-boundaries.md`.
+- Cached satellite orbital elements are documented in `docs/satellites.md`. The v1 implementation is disabled by default and cache/catalog only; it does not draw satellite positions.
 - This repo expects LF line endings. Avoid switching the same checkout back and forth between Windows Git and WSL Git; if you need both, use separate clones or worktrees.
 
 ## Runtime Configuration
@@ -32,6 +33,16 @@ SHM_TOMTOM_API_KEY="your-tomtom-key"
 ```
 
 TomTom tiles are proxied through `/api/traffic/tomtom/...` so the browser never receives the API key. Restart `self-hosted-maps-api` after changing these runtime settings.
+
+Cached satellite orbital elements are disabled by default and require local admin refresh/import before any catalog data is available:
+
+```sh
+SHM_SATELLITES_ENABLED="1"
+SHM_SATELLITES_CELESTRAK_GROUP="active"
+SHM_ADMIN_TOKEN="set-a-token-before-refresh-or-import"
+```
+
+This is OMM-first cache/catalog support under `${SHM_DATA_ROOT}/cache/satellites`; Space-Track and orbital propagation are not included in v1.
 
 ## Application Updates
 
