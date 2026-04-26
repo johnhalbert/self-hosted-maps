@@ -119,6 +119,8 @@ validate_source() {
     "scripts/configure-system.sh"
     "assets/index.html"
     "assets/app.js"
+    "config/tilemaker/config.json"
+    "config/tilemaker/process.lua"
     "docs/manager-usage.txt"
   )
   local missing=()
@@ -182,6 +184,7 @@ surfaces_json() {
     runtime: [
       "install_root/bin",
       "install_root/www (preserving www/vendor)",
+      "install_root/config/tilemaker",
       "config_root/manager-usage.txt",
       "/usr/local/bin/self-hosted-maps-* symlinks"
     ],
@@ -327,7 +330,7 @@ run_from_temp_copy_if_needed() {
 stage_runtime_files() {
   local source="$1"
   local stage="$2"
-  mkdir -p "$stage/install/bin" "$stage/install/www" "$stage/config"
+  mkdir -p "$stage/install/bin" "$stage/install/www" "$stage/install/config/tilemaker" "$stage/config"
   cp -a "$source/bin/." "$stage/install/bin/"
   chmod +x "$stage/install/bin/"*.sh
 
@@ -337,12 +340,14 @@ stage_runtime_files() {
     cp -a "$SHM_INSTALL_ROOT/www/vendor/." "$stage/install/www/vendor/"
   fi
 
+  cp -a "$source/config/tilemaker/." "$stage/install/config/tilemaker/"
   cp "$source/docs/manager-usage.txt" "$stage/config/manager-usage.txt"
 }
 
 validate_staged_runtime() {
   local stage="$1"
   bash -n "$stage/install/bin/"*.sh
+  jq -e '.layers | type == "object"' "$stage/install/config/tilemaker/config.json" >/dev/null
   if command -v python3 >/dev/null 2>&1; then
     python3 -m py_compile "$stage/install/bin/web-api.py"
   fi
@@ -362,6 +367,7 @@ backup_surfaces() {
   mkdir -p "$backup"
   copy_if_exists "$SHM_INSTALL_ROOT/bin" "$backup/install/bin"
   copy_if_exists "$SHM_INSTALL_ROOT/www" "$backup/install/www"
+  copy_if_exists "$SHM_INSTALL_ROOT/config/tilemaker" "$backup/install/config/tilemaker"
   copy_if_exists "$SHM_CONFIG_ROOT/manager-usage.txt" "$backup/config/manager-usage.txt"
   mkdir -p "$backup/usr-local-bin"
   local link
@@ -387,9 +393,10 @@ backup_surfaces() {
 
 install_runtime_files() {
   local stage="$1"
-  install -d -m 0755 "$SHM_INSTALL_ROOT/bin" "$SHM_INSTALL_ROOT/www" "$SHM_CONFIG_ROOT" /usr/local/bin
+  install -d -m 0755 "$SHM_INSTALL_ROOT/bin" "$SHM_INSTALL_ROOT/www" "$SHM_INSTALL_ROOT/config/tilemaker" "$SHM_CONFIG_ROOT" /usr/local/bin
   cp -a "$stage/install/bin/." "$SHM_INSTALL_ROOT/bin/"
   cp -a "$stage/install/www/." "$SHM_INSTALL_ROOT/www/"
+  cp -a "$stage/install/config/tilemaker/." "$SHM_INSTALL_ROOT/config/tilemaker/"
   install -m 0644 "$stage/config/manager-usage.txt" "$SHM_CONFIG_ROOT/manager-usage.txt"
 
   ln -sf "$SHM_INSTALL_ROOT/bin/_shm_common.sh" /usr/local/bin/_shm_common.sh

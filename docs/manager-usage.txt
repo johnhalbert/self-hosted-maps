@@ -26,6 +26,7 @@ Viewer:
 Viewer features:
 - top-left coordinate or address search
 - a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
+- right-side offline OSM layer toggles for source layers present in the current vector tiles
 - right-side live overlay toggles for OpenSky, ADS-B Exchange, AIS vessels, and TomTom traffic when configured
 
 Flight data configuration:
@@ -52,7 +53,8 @@ Manager capabilities:
 Application updates:
 - Run self-hosted-maps-manager and choose "Update application", or run self-hosted-maps-update-app directly.
 - The updater applies an already-updated local checkout into /opt/self-hosted-maps. It does not run git pull, update datasets, rebuild maps, install packages, or change runtime secrets.
-- By default, app updates refresh installed scripts, viewer assets, manager docs, and command shortcuts while preserving downloaded datasets, current map tiles, runtime credentials, dataset state, and /opt/self-hosted-maps/www/vendor.
+- By default, app updates refresh installed scripts, viewer assets, the repo-owned Tilemaker profile, manager docs, and command shortcuts while preserving downloaded datasets, current map tiles, runtime credentials, dataset state, and /opt/self-hosted-maps/www/vendor.
+- Rebuild the served map after Tilemaker profile changes so current MBTiles include the new schema.
 - Advanced system config refresh is optional and separately confirmed because it can update systemd, nginx, and TileServer config.
 - App update metadata is written to /etc/self-hosted-maps/app-manifest.json. Backups are stored under /var/lib/self-hosted-maps/backups/app-update.
 

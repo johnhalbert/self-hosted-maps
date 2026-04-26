@@ -18,6 +18,8 @@ body {
 .message,
 .flight-menu-toggle,
 .flight-menu-panel,
+.osm-menu-toggle,
+.osm-menu-panel,
 .modal-panel {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
@@ -93,7 +95,8 @@ body {
 .toolbar-button:disabled,
 .install-button:disabled,
 .modal-panel button:disabled,
-.flight-button:disabled {
+.flight-button:disabled,
+.osm-layer-button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
@@ -189,6 +192,8 @@ body {
 
 .flight-menu-toggle:focus-visible,
 .flight-button:focus-visible,
+.osm-menu-toggle:focus-visible,
+.osm-layer-button:focus-visible,
 .search-box input:focus-visible,
 .search-box button:focus-visible,
 .config-button:focus-visible,
@@ -266,6 +271,128 @@ body {
 }
 
 .flight-button.unavailable {
+  background: rgba(229, 231, 235, 0.98);
+  color: #6b7280;
+}
+
+.osm-controls {
+  position: absolute;
+  z-index: 10;
+  top: calc(50% + 68px);
+  right: 10px;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 10px;
+  transform: translateY(-50%);
+}
+
+.osm-menu-toggle {
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #111827;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.osm-menu-toggle[data-state="active"] {
+  background: #047857;
+  color: #ffffff;
+}
+
+.osm-menu-toggle[data-state="unavailable"] {
+  background: rgba(229, 231, 235, 0.98);
+  color: #6b7280;
+}
+
+.osm-menu-toggle:hover {
+  transform: scale(1.02);
+}
+
+.osm-menu-icon {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.osm-menu-icon svg {
+  width: 24px;
+  height: 24px;
+  display: block;
+}
+
+.osm-menu-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 0;
+  opacity: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  transform: translateX(12px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    max-width 180ms ease,
+    opacity 180ms ease,
+    transform 180ms ease,
+    padding 180ms ease,
+    visibility 0s linear 180ms;
+}
+
+.osm-controls[data-open="true"] .osm-menu-panel {
+  max-width: 230px;
+  opacity: 1;
+  padding: 10px;
+  transform: translateX(0);
+  pointer-events: auto;
+  visibility: visible;
+  transition:
+    max-width 180ms ease,
+    opacity 180ms ease,
+    transform 180ms ease,
+    padding 180ms ease,
+    visibility 0s linear 0s;
+}
+
+.osm-menu-title {
+  padding: 2px 4px 4px;
+  color: #374151;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.osm-layer-button {
+  min-width: 180px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #111827;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.osm-layer-button.active {
+  background: #047857;
+  color: #ffffff;
+}
+
+.osm-layer-button.unavailable {
   background: rgba(229, 231, 235, 0.98);
   color: #6b7280;
 }

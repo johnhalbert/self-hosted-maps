@@ -10,9 +10,17 @@
     "water": { "source": "water" },
     "waterway": { "source": "waterway" },
     "landcover": { "source": "landuse" },
+    "landuse": { "source": "landuse" },
+    "park": { "source": "landuse" },
+    "boundary": { "source": "boundary" },
     "building": { "source": "building" },
     "transportation": { "source": "highway" },
+    "transportation_name": { "source": "highway" },
+    "water_name": { "source": "water_name" },
     "place": { "source": "place" },
-    "poi": { "source": "poi" }
+    "poi": { "source": "poi" },
+    "theme_area": { "source": "theme_area" },
+    "theme_line": { "source": "theme_line" },
+    "theme_poi": { "source": "theme_poi" }
   }
 }
