@@ -42,11 +42,20 @@
       </span>
     </button>
     <div id="flightMenuPanel" class="flight-menu-panel" aria-hidden="true">
-      <button id="toggleOpenSky" class="flight-button" type="button" tabindex="-1">OpenSky</button>
-      <button id="toggleAdsbx" class="flight-button" type="button" tabindex="-1">ADS-B Exchange</button>
-      <button id="toggleAisVessels" class="flight-button" type="button" tabindex="-1">AIS vessels</button>
-      <button id="toggleTrafficFlow" class="flight-button" type="button" tabindex="-1">Traffic flow</button>
-      <button id="toggleTrafficIncidents" class="flight-button" type="button" tabindex="-1">Traffic incidents</button>
+      <div class="layer-menu-section">
+        <div class="layer-menu-heading">Live layers</div>
+        <button id="toggleOpenSky" class="flight-button" type="button" tabindex="-1">OpenSky</button>
+        <button id="toggleAdsbx" class="flight-button" type="button" tabindex="-1">ADS-B Exchange</button>
+        <button id="toggleAisVessels" class="flight-button" type="button" tabindex="-1">AIS vessels</button>
+        <button id="toggleTrafficFlow" class="flight-button" type="button" tabindex="-1">Traffic flow</button>
+        <button id="toggleTrafficIncidents" class="flight-button" type="button" tabindex="-1">Traffic incidents</button>
+      </div>
+      <div class="layer-menu-section">
+        <div class="layer-menu-heading">Offline imagery</div>
+        <div id="imageryOverlayControls" class="imagery-overlay-controls">
+          <button class="flight-button unavailable" type="button" disabled tabindex="-1">Imagery unavailable</button>
+        </div>
+      </div>
     </div>
   </div>
 

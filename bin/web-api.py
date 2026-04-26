@@ -5,7 +5,9 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
+import sqlite3
 import socket
 import subprocess
 import ssl
@@ -51,6 +53,20 @@ AISSTREAM_MAX_BBOX_AREA = 100
 TOMTOM_DEFAULT_BASE_URL = "https://api.tomtom.com"
 TOMTOM_TRAFFIC_MAX_ZOOM = 22
 TOMTOM_TRAFFIC_MAX_TILE_BYTES = 1_500_000
+IMAGERY_ROOT = Path(os.environ.get("SHM_IMAGERY_ROOT", str(DATA_ROOT / "imagery")))
+IMAGERY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+IMAGERY_TILE_RE = re.compile(r"^/api/imagery/([^/]+)/([0-9]+)/([0-9]+)/([0-9]+)\.(png|jpg|webp)$")
+IMAGERY_TILEJSON_RE = re.compile(r"^/api/imagery/([^/]+)\.json$")
+IMAGERY_CONTENT_TYPES = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+}
+
+
+class NotFoundError(Exception):
+    pass
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -73,6 +89,15 @@ def json_response(ok: bool, data=None, error=None):
     return payload
 
 
+def default_imagery_state():
+    return {
+        "schema_version": 1,
+        "installed": {},
+        "order": [],
+        "enabled": [],
+    }
+
+
 def default_state():
     return {
         "catalog": {
@@ -85,6 +110,7 @@ def default_state():
         },
         "installed": {},
         "selected": [],
+        "imagery": default_imagery_state(),
         "current": {
             "selected_hash": None,
             "artifact_path": None,
@@ -105,9 +131,16 @@ def read_state():
         return default_state(), False
 
     merged = default_state()
-    merged.update({k: v for k, v in state.items() if k not in {"catalog", "current"}})
+    merged.update({k: v for k, v in state.items() if k not in {"catalog", "current", "imagery"}})
     merged["catalog"].update(state.get("catalog") or {})
     merged["current"].update(state.get("current") or {})
+    merged["imagery"].update(state.get("imagery") or {})
+    if not isinstance(merged["imagery"].get("installed"), dict):
+        merged["imagery"]["installed"] = {}
+    if not isinstance(merged["imagery"].get("order"), list):
+        merged["imagery"]["order"] = []
+    if not isinstance(merged["imagery"].get("enabled"), list):
+        merged["imagery"]["enabled"] = []
     return merged, True
 
 
@@ -498,6 +531,246 @@ def build_dataset_list():
             }
         )
     return {"statePresent": state_present, "items": items}
+
+
+def validate_imagery_id(overlay_id: str) -> str:
+    overlay_id = str(overlay_id or "").strip()
+    if not IMAGERY_ID_RE.fullmatch(overlay_id):
+        raise ValueError("Invalid imagery overlay id.")
+    return overlay_id
+
+
+def normalize_tile_format(value: str) -> str:
+    tile_format = str(value or "").strip().lower()
+    if tile_format == "jpeg":
+        return "jpg"
+    if tile_format not in {"png", "jpg", "webp"}:
+        raise ValueError("Unsupported imagery tile format.")
+    return tile_format
+
+
+def content_type_for_tile_format(tile_format: str) -> str:
+    return IMAGERY_CONTENT_TYPES[normalize_tile_format(tile_format)]
+
+
+def imagery_root_resolved() -> Path:
+    return IMAGERY_ROOT.resolve(strict=False)
+
+
+def resolve_imagery_mbtiles_path(path_value: str) -> Path:
+    if not path_value:
+        raise ValueError("Imagery overlay path is missing.")
+    path = Path(path_value).expanduser().resolve(strict=False)
+    root = imagery_root_resolved()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Imagery overlay path is outside the managed imagery root.") from exc
+    return path
+
+
+def imagery_public_item(overlay_id: str, meta: dict, enabled_ids: set[str]):
+    tile_format = normalize_tile_format(meta.get("tile_format") or meta.get("format") or "")
+    content_type = meta.get("content_type") or content_type_for_tile_format(tile_format)
+    if content_type != content_type_for_tile_format(tile_format):
+        raise ValueError("Imagery content type does not match tile format.")
+    return {
+        "id": overlay_id,
+        "name": meta.get("name") or overlay_id,
+        "format": meta.get("format") or "mbtiles",
+        "tileFormat": tile_format,
+        "contentType": content_type,
+        "tilejsonUrl": f"/api/imagery/{urlparse.quote(overlay_id, safe='')}.json",
+        "bounds": meta.get("bounds") or [-180, -85.0511, 180, 85.0511],
+        "minzoom": int(meta.get("minzoom") or 0),
+        "maxzoom": int(meta.get("maxzoom") or 22),
+        "tileSize": int(meta.get("tile_size") or meta.get("tileSize") or 256),
+        "opacity": float(meta.get("opacity") if meta.get("opacity") is not None else 0.75),
+        "attribution": meta.get("attribution") or "",
+        "license": meta.get("license") or {},
+        "usageNotes": meta.get("usage_notes") or meta.get("usageNotes") or "",
+        "source": {
+            "type": (meta.get("source") or {}).get("type") or "",
+            "url": (meta.get("source") or {}).get("url") or "",
+            "sha256": (meta.get("source") or {}).get("sha256") or "",
+        },
+        "enabled": overlay_id in enabled_ids,
+        "available": bool(meta.get("available")),
+        "bytes": int(meta.get("bytes") or 0),
+        "sha256": meta.get("sha256") or "",
+        "checkedAt": meta.get("checked_at") or "",
+        "installedAt": meta.get("installed_at") or "",
+        "updatedAt": meta.get("updated_at") or "",
+    }
+
+
+def ordered_imagery_items(imagery_state: dict):
+    installed = imagery_state.get("installed") or {}
+    order = [str(item) for item in (imagery_state.get("order") or [])]
+    ids = [overlay_id for overlay_id in order if overlay_id in installed]
+    ids.extend(sorted(overlay_id for overlay_id in installed if overlay_id not in ids))
+    return ids, installed
+
+
+def build_imagery_response():
+    state, state_present = read_state()
+    imagery_state = state.get("imagery") or default_imagery_state()
+    enabled_ids = {str(overlay_id) for overlay_id in (imagery_state.get("enabled") or [])}
+    ids, installed = ordered_imagery_items(imagery_state)
+    items = []
+    item_ids = []
+    for overlay_id in ids:
+        try:
+            validate_imagery_id(overlay_id)
+            meta = installed.get(overlay_id) or {}
+            if meta.get("path"):
+                resolve_imagery_mbtiles_path(meta.get("path"))
+            items.append(imagery_public_item(overlay_id, meta, enabled_ids))
+            item_ids.append(overlay_id)
+        except (TypeError, ValueError):
+            continue
+    enabled = [overlay_id for overlay_id in item_ids if overlay_id in enabled_ids]
+    return {
+        "statePresent": state_present,
+        "schemaVersion": int(imagery_state.get("schema_version") or 1),
+        "items": items,
+        "order": item_ids,
+        "enabled": enabled,
+    }
+
+
+def get_imagery_overlay(overlay_id: str):
+    overlay_id = validate_imagery_id(overlay_id)
+    state, _ = read_state()
+    imagery_state = state.get("imagery") or {}
+    meta = (imagery_state.get("installed") or {}).get(overlay_id)
+    if not isinstance(meta, dict):
+        raise NotFoundError("Unknown imagery overlay.")
+    path = resolve_imagery_mbtiles_path(meta.get("path") or "")
+    tile_format = normalize_tile_format(meta.get("tile_format") or "")
+    content_type = meta.get("content_type") or content_type_for_tile_format(tile_format)
+    expected_content_type = content_type_for_tile_format(tile_format)
+    if content_type != expected_content_type:
+        raise ValueError("Imagery content type does not match tile format.")
+    return overlay_id, meta, path, tile_format, content_type
+
+
+def imagery_tilejson(overlay_id: str):
+    overlay_id, meta, _path, tile_format, _content_type = get_imagery_overlay(overlay_id)
+    return {
+        "tilejson": "2.2.0",
+        "version": "1.0.0",
+        "name": meta.get("name") or overlay_id,
+        "scheme": "xyz",
+        "tiles": [f"/api/imagery/{urlparse.quote(overlay_id, safe='')}/{{z}}/{{x}}/{{y}}.{tile_format}"],
+        "minzoom": int(meta.get("minzoom") or 0),
+        "maxzoom": int(meta.get("maxzoom") or 22),
+        "bounds": meta.get("bounds") or [-180, -85.0511, 180, 85.0511],
+        "tileSize": int(meta.get("tile_size") or meta.get("tileSize") or 256),
+        "attribution": meta.get("attribution") or "",
+    }
+
+
+def parse_imagery_tilejson_path(path: str):
+    match = IMAGERY_TILEJSON_RE.fullmatch(path)
+    if not match:
+        return None
+    return validate_imagery_id(match.group(1))
+
+
+def parse_imagery_tile_path(path: str):
+    match = IMAGERY_TILE_RE.fullmatch(path)
+    if not match:
+        return None
+    overlay_id = validate_imagery_id(match.group(1))
+    z = int(match.group(2))
+    x = int(match.group(3))
+    y = int(match.group(4))
+    extension = match.group(5)
+    return overlay_id, z, x, y, extension
+
+
+def xyz_to_tms_row(z: int, y: int) -> int:
+    return (1 << z) - 1 - y
+
+
+def validate_xyz_coordinate(z: int, x: int, y: int, minzoom: int, maxzoom: int):
+    if z < minzoom or z > maxzoom:
+        raise ValueError("Imagery tile zoom is outside the overlay zoom range.")
+    if z < 0 or z > 30:
+        raise ValueError("Imagery tile zoom is invalid.")
+    limit = 1 << z
+    if x < 0 or y < 0 or x >= limit or y >= limit:
+        raise ValueError("Imagery tile coordinates are invalid.")
+
+
+def open_mbtiles_readonly(path: Path):
+    uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+    return sqlite3.connect(uri, uri=True)
+
+
+def read_mbtiles_metadata(path: Path):
+    conn = open_mbtiles_readonly(path)
+    try:
+        required_tables = {
+            row[0]
+            for row in conn.execute(
+                "select name from sqlite_master where type = 'table' and name in ('metadata', 'tiles')"
+            )
+        }
+        if required_tables != {"metadata", "tiles"}:
+            raise ValueError("MBTiles file must contain metadata and tiles tables.")
+        metadata = {str(name): str(value) for name, value in conn.execute("select name, value from metadata")}
+        tile_rows = list(conn.execute("select min(zoom_level), max(zoom_level) from tiles"))[0]
+    finally:
+        conn.close()
+    return metadata, tile_rows
+
+
+def validate_tile_magic(body: bytes, tile_format: str) -> bool:
+    tile_format = normalize_tile_format(tile_format)
+    if tile_format == "png":
+        return body.startswith(b"\x89PNG\r\n\x1a\n")
+    if tile_format == "jpg":
+        return body.startswith(b"\xff\xd8\xff")
+    if tile_format == "webp":
+        return len(body) >= 12 and body.startswith(b"RIFF") and body[8:12] == b"WEBP"
+    return False
+
+
+def fetch_imagery_tile(overlay_id: str, z: int, x: int, y: int, extension: str):
+    overlay_id, meta, path, tile_format, content_type = get_imagery_overlay(overlay_id)
+    if extension != tile_format:
+        raise ValueError("Imagery tile extension does not match the registered tile format.")
+    validate_xyz_coordinate(z, x, y, int(meta.get("minzoom") or 0), int(meta.get("maxzoom") or 22))
+    if not path.is_file():
+        raise NotFoundError("Imagery MBTiles file is unavailable.")
+    tile_row = xyz_to_tms_row(z, y)
+    conn = open_mbtiles_readonly(path)
+    try:
+        row = conn.execute(
+            """
+            select tile_data
+            from tiles
+            where zoom_level = ? and tile_column = ? and tile_row = ?
+            """,
+            (z, x, tile_row),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise NotFoundError("Imagery tile not found.")
+    body = row[0]
+    if not validate_tile_magic(body, tile_format):
+        raise ValueError("Imagery tile bytes do not match the registered tile format.")
+    fingerprint = meta.get("sha256") or f"{path.stat().st_size:x}-{int(path.stat().st_mtime):x}"
+    etag = f'"imagery-{overlay_id}-{fingerprint}-{z}-{x}-{y}"'
+    return {
+        "body": body,
+        "contentType": content_type,
+        "etag": etag,
+        "cacheControl": "public, max-age=3600, immutable",
+    }
 
 
 def build_catalog_response(query: str):
@@ -2061,6 +2334,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_not_modified(self, headers=None):
+        self.send_response(304)
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+
     def _read_json(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -2117,6 +2396,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, json_response(True, build_selected_area_response()))
             elif path == "/api/capabilities":
                 self._send_json(200, json_response(True, build_capabilities()))
+            elif path == "/api/imagery":
+                self._send_json(200, json_response(True, build_imagery_response()))
+            elif path.startswith("/api/imagery/"):
+                tilejson_id = parse_imagery_tilejson_path(path)
+                parsed_tile = None if tilejson_id else parse_imagery_tile_path(path)
+                if tilejson_id:
+                    self._send_json(200, imagery_tilejson(tilejson_id))
+                elif parsed_tile:
+                    overlay_id, z, x, y, extension = parsed_tile
+                    tile = fetch_imagery_tile(overlay_id, z, x, y, extension)
+                    headers = {
+                        "Cache-Control": tile["cacheControl"],
+                        "ETag": tile["etag"],
+                    }
+                    if self.headers.get("If-None-Match") == tile["etag"]:
+                        self._send_not_modified(headers)
+                        return
+                    self._send_bytes(200, tile["body"], tile["contentType"], headers)
+                else:
+                    self._send_json(404, json_response(False, error={"code": "not_found", "message": "Not found."}))
             elif path == "/api/vessels/aisstream" or path == "/api/ais":
                 self._send_json(200, json_response(True, fetch_aisstream_vessels(query)))
             elif path == "/api/vessels/detail":
@@ -2202,6 +2501,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, json_response(False, error={"code": "not_found", "message": "Not found."}))
         except ValueError as exc:
             self._send_json(400, json_response(False, error={"code": "bad_request", "message": str(exc)}))
+        except NotFoundError as exc:
+            self._send_json(404, json_response(False, error={"code": "not_found", "message": str(exc)}))
         except RuntimeError as exc:
             self._send_json(503, json_response(False, error={"code": "unavailable", "message": str(exc)}))
         except urlerror.HTTPError as exc:

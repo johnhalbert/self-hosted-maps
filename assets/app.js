@@ -185,6 +185,11 @@ const appState = {
     flow: false,
     incidents: false
   },
+  imagery: {
+    items: [],
+    enabled: [],
+    activeId: null
+  },
   suppressFlightPopupClose: false,
   prefersReducedMotion: reducedMotionEnabled(),
   flightMenuOpen: false,
@@ -629,6 +634,27 @@ async function safeLoadSelectedArea() {
   }
 }
 
+function chooseInitialImageryId(imageryData) {
+  const items = Array.isArray(imageryData?.items) ? imageryData.items.filter((item) => item.available) : [];
+  const enabled = Array.isArray(imageryData?.enabled) ? imageryData.enabled : [];
+  const enabledMatch = enabled.find((id) => items.some((item) => item.id === id));
+  return enabledMatch || null;
+}
+
+async function safeLoadImagery() {
+  try {
+    const imageryData = await requestJson("/api/imagery");
+    appState.imagery.items = Array.isArray(imageryData.items) ? imageryData.items : [];
+    appState.imagery.enabled = Array.isArray(imageryData.enabled) ? imageryData.enabled : [];
+    appState.imagery.activeId = chooseInitialImageryId(imageryData);
+  } catch (error) {
+    console.warn("Falling back to no offline imagery overlays.", error);
+    appState.imagery.items = [];
+    appState.imagery.enabled = [];
+    appState.imagery.activeId = null;
+  }
+}
+
 async function loadTileJsonView(tilejsonUrl) {
   try {
     const response = await fetch(tilejsonUrl);
@@ -953,6 +979,73 @@ function ensureTrafficLayer(kind) {
   }
 }
 
+function imagerySourceId(overlayId) {
+  return `imagery-${overlayId}`;
+}
+
+function imageryLayerId(overlayId) {
+  return `imagery-${overlayId}-layer`;
+}
+
+function imageryBeforeLayerId() {
+  if (!appState.map) {
+    return undefined;
+  }
+  const candidates = [
+    "selected-area-outline-provider",
+    "selected-area-outline-display",
+    "water-label",
+    "road-label",
+    "place-label"
+  ];
+  return candidates.find((layerId) => appState.map.getLayer(layerId));
+}
+
+function ensureImageryLayer(overlay) {
+  if (!appState.map || !overlay?.id || !overlay.available) {
+    return;
+  }
+  const sourceId = imagerySourceId(overlay.id);
+  const layerId = imageryLayerId(overlay.id);
+  if (!appState.map.getSource(sourceId)) {
+    appState.map.addSource(sourceId, {
+      type: "raster",
+      url: overlay.tilejsonUrl,
+      tileSize: overlay.tileSize || 256,
+      attribution: overlay.attribution || undefined
+    });
+  }
+  if (!appState.map.getLayer(layerId)) {
+    appState.map.addLayer(
+      {
+        id: layerId,
+        type: "raster",
+        source: sourceId,
+        layout: { visibility: appState.imagery.activeId === overlay.id ? "visible" : "none" },
+        paint: { "raster-opacity": overlay.opacity ?? 0.75 }
+      },
+      imageryBeforeLayerId()
+    );
+  }
+}
+
+function applyImageryOverlays() {
+  if (!appState.map || !appState.map.isStyleLoaded()) {
+    return;
+  }
+  appState.imagery.items.forEach((overlay) => {
+    ensureImageryLayer(overlay);
+    const layerId = imageryLayerId(overlay.id);
+    if (appState.map.getLayer(layerId)) {
+      appState.map.setLayoutProperty(
+        layerId,
+        "visibility",
+        overlay.id === appState.imagery.activeId ? "visible" : "none"
+      );
+    }
+  });
+}
+
 function setTrafficLayerVisibility(kind, visible) {
   const config = TRAFFIC_LAYERS[kind];
   if (!appState.map || !config) {
@@ -964,6 +1057,62 @@ function setTrafficLayerVisibility(kind, visible) {
   if (appState.map.getLayer(config.layerId)) {
     appState.map.setLayoutProperty(config.layerId, "visibility", visible ? "visible" : "none");
   }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderImageryControls() {
+  const container = document.getElementById("imageryOverlayControls");
+  if (!container) {
+    return;
+  }
+  const overlays = appState.imagery.items.filter((item) => item.available);
+  if (!overlays.length) {
+    container.innerHTML =
+      '<button class="flight-button unavailable" type="button" disabled tabindex="-1">Imagery unavailable</button>';
+    return;
+  }
+  container.innerHTML = overlays
+    .map((overlay) => {
+      const active = overlay.id === appState.imagery.activeId;
+      const licenseName = overlay.license?.name || "License details unavailable";
+      return `
+        <button
+          class="flight-button imagery-button ${active ? "active" : ""}"
+          type="button"
+          data-imagery-id="${escapeHtml(overlay.id)}"
+          aria-pressed="${active ? "true" : "false"}"
+          tabindex="${appState.flightMenuOpen ? "0" : "-1"}"
+          title="${escapeHtml(overlay.usageNotes || overlay.attribution || overlay.name)}"
+        >
+          ${escapeHtml(overlay.name || overlay.id)}
+          <span class="imagery-license">${escapeHtml(licenseName)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function toggleImageryOverlay(overlayId) {
+  const overlay = appState.imagery.items.find((item) => item.id === overlayId && item.available);
+  if (!overlay) {
+    return;
+  }
+  if (!appState.map || !appState.map.isStyleLoaded()) {
+    showMessage("Map is still loading. Try again in a moment.", "warn");
+    return;
+  }
+  appState.imagery.activeId = appState.imagery.activeId === overlayId ? null : overlayId;
+  applyImageryOverlays();
+  renderImageryControls();
+  updateFlightButtons();
 }
 
 function flightMenuElements() {
@@ -1010,6 +1159,9 @@ function syncFlightMenuState() {
     if (!button) {
       return;
     }
+    button.tabIndex = appState.flightMenuOpen && !button.disabled ? 0 : -1;
+  });
+  document.querySelectorAll("#imageryOverlayControls button").forEach((button) => {
     button.tabIndex = appState.flightMenuOpen && !button.disabled ? 0 : -1;
   });
 }
@@ -1075,14 +1227,18 @@ function updateFlightButtons() {
     button.textContent = available ? config.label : `${config.label} (Unavailable)`;
   });
 
+  renderImageryControls();
+
   if (toggle) {
+    const imageryAvailable = appState.imagery.items.some((item) => item.available);
     const anyActive =
       Object.keys(flightProviders).some((providerKey) => appState.flightsEnabled[providerKey]) ||
       appState.vesselsEnabled ||
-      Object.values(appState.trafficEnabled).some(Boolean);
+      Object.values(appState.trafficEnabled).some(Boolean) ||
+      Boolean(appState.imagery.activeId);
     const anyAvailable = Object.keys(flightProviders).some((providerKey) =>
       isFlightProviderAvailable(providerKey)
-    ) || isVesselProviderAvailable() || Object.keys(TRAFFIC_LAYERS).some((kind) => isTrafficLayerAvailable(kind));
+    ) || isVesselProviderAvailable() || Object.keys(TRAFFIC_LAYERS).some((kind) => isTrafficLayerAvailable(kind)) || imageryAvailable;
     toggle.dataset.state = anyActive ? "active" : anyAvailable ? "idle" : "unavailable";
   }
 
@@ -2635,6 +2791,13 @@ function bindDomEvents() {
   document.getElementById("toggleAisVessels").addEventListener("click", () => toggleVessels());
   document.getElementById("toggleTrafficFlow").addEventListener("click", () => toggleTrafficLayer("flow"));
   document.getElementById("toggleTrafficIncidents").addEventListener("click", () => toggleTrafficLayer("incidents"));
+  document.getElementById("imageryOverlayControls").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-imagery-id]");
+    if (!button) {
+      return;
+    }
+    toggleImageryOverlay(button.dataset.imageryId);
+  });
   document.getElementById("catalogResults").addEventListener("click", (event) => {
     const button = event.target.closest("[data-install-id]");
     if (!button) {
@@ -2700,6 +2863,7 @@ async function initMap() {
     ensureVesselLayers();
     bindFlightMapInteractions();
     applySelectedAreaOverlay();
+    applyImageryOverlays();
     if (currentAreaBounds) {
       appState.map.fitBounds(currentAreaBounds, {
         padding: 40,
@@ -2723,7 +2887,7 @@ async function initMap() {
 
 async function init() {
   bindDomEvents();
-  await Promise.all([safeLoadOverview(), safeLoadCapabilities(), safeLoadSelectedArea()]);
+  await Promise.all([safeLoadOverview(), safeLoadCapabilities(), safeLoadSelectedArea(), safeLoadImagery()]);
   updateFlightButtons();
   await initMap();
 }

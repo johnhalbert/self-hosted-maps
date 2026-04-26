@@ -370,6 +370,9 @@ backup_surfaces() {
     /usr/local/bin/self-hosted-maps-rebuild \
     /usr/local/bin/self-hosted-maps-refresh-catalog \
     /usr/local/bin/self-hosted-maps-list-installed \
+    /usr/local/bin/self-hosted-maps-install-imagery \
+    /usr/local/bin/self-hosted-maps-list-imagery \
+    /usr/local/bin/self-hosted-maps-remove-imagery \
     /usr/local/bin/self-hosted-maps-update-app; do
     if [[ -e "$link" || -L "$link" ]]; then
       cp -a "$link" "$backup/usr-local-bin/"
@@ -397,6 +400,9 @@ install_runtime_files() {
   ln -sf "$SHM_INSTALL_ROOT/bin/rebuild-selected.sh" /usr/local/bin/self-hosted-maps-rebuild
   ln -sf "$SHM_INSTALL_ROOT/bin/refresh-catalog.sh" /usr/local/bin/self-hosted-maps-refresh-catalog
   ln -sf "$SHM_INSTALL_ROOT/bin/list-installed.sh" /usr/local/bin/self-hosted-maps-list-installed
+  ln -sf "$SHM_INSTALL_ROOT/bin/install-imagery-mbtiles.sh" /usr/local/bin/self-hosted-maps-install-imagery
+  ln -sf "$SHM_INSTALL_ROOT/bin/list-imagery-overlays.sh" /usr/local/bin/self-hosted-maps-list-imagery
+  ln -sf "$SHM_INSTALL_ROOT/bin/remove-imagery.sh" /usr/local/bin/self-hosted-maps-remove-imagery
   ln -sf "$SHM_INSTALL_ROOT/bin/update-app.sh" /usr/local/bin/self-hosted-maps-update-app
 }
 

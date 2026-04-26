@@ -4,6 +4,7 @@
 
 - Static world land fallback data is vendored in `assets/world-land.geojson`. Source and regeneration details live in `docs/world-land.md`.
 - Curated U.S. state display-boundary overrides are vendored in `assets/us-state-display-boundary-index.json`. Source and regeneration details live in `docs/us-state-display-boundaries.md`.
+- Offline raster imagery overlays can be installed from licensed raster MBTiles. Usage and licensing requirements live in `docs/imagery-overlays.md`.
 - This repo expects LF line endings. Avoid switching the same checkout back and forth between Windows Git and WSL Git; if you need both, use separate clones or worktrees.
 
 ## Runtime Configuration
@@ -32,6 +33,14 @@ SHM_TOMTOM_API_KEY="your-tomtom-key"
 ```
 
 TomTom tiles are proxied through `/api/traffic/tomtom/...` so the browser never receives the API key. Restart `self-hosted-maps-api` after changing these runtime settings.
+
+Offline raster imagery overlays are served from locally managed MBTiles under `/var/lib/self-hosted-maps/imagery`. Install only imagery that permits local storage and serving:
+
+```sh
+self-hosted-maps-install-imagery <id> "<name>" /path/to/tiles.mbtiles --attribution "<text>" --license-name "<license>"
+self-hosted-maps-list-imagery
+self-hosted-maps-remove-imagery <id>
+```
 
 ## Application Updates
 

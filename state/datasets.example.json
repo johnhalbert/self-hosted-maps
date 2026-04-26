@@ -9,6 +9,12 @@
   },
   "installed": {},
   "selected": [],
+  "imagery": {
+    "schema_version": 1,
+    "installed": {},
+    "order": [],
+    "enabled": []
+  },
   "current": {
     "selected_hash": null,
     "artifact_path": null,
