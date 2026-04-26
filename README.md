@@ -7,6 +7,7 @@
 - Offline OSM layer controls and the repo-owned Tilemaker profile are documented in `docs/offline-osm-overlays.md`.
 - Offline raster imagery overlays can be installed from licensed raster MBTiles. Usage and licensing requirements live in `docs/imagery-overlays.md`.
 - Optional offline terrain and hillshade artifacts live under the data root, not app assets. Install details live in `docs/terrain.md`.
+- Disabled-by-default local street imagery support is documented in `docs/local-street-imagery.md`.
 - This repo expects LF line endings. Avoid switching the same checkout back and forth between Windows Git and WSL Git; if you need both, use separate clones or worktrees.
 
 ## Runtime Configuration
@@ -47,6 +48,18 @@ self-hosted-maps-remove-imagery <id>
 ## Offline Terrain
 
 Terrain and hillshade are disabled until a matching local raster-dem artifact is installed under `/var/lib/self-hosted-maps/current/terrain`. The API advertises terrain only when its manifest matches the current map `selected_hash` and `dataset_ids`, so stale terrain is hidden after vector map changes. Small local DEMs can be converted with `bin/build-terrain-tiles.py`; see `docs/terrain.md`.
+
+## Local Street Imagery
+
+Local street imagery is disabled by default and only serves owner-controlled, publishable/redacted records from `SHM_STREET_IMAGERY_ROOT` or `${SHM_DATA_ROOT}/street-imagery`:
+
+```sh
+SHM_STREET_IMAGERY_ENABLED="1"
+SHM_STREET_IMAGERY_ROOT="/var/lib/self-hosted-maps/street-imagery"
+```
+
+The browser uses `/api/street-imagery/...` item ids and never sends local file paths or URLs. Street imagery admin operations require `SHM_ADMIN_TOKEN` to be set. Panoramax remains deferred/third-party-only and Google/Mapillary offline modes are not implemented.
+If `SHM_STREET_IMAGERY_ROOT` is customized, it must still resolve under `SHM_DATA_ROOT`.
 
 ## Application Updates
 
