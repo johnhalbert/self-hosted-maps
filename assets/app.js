@@ -12,6 +12,31 @@ const FLIGHT_MAX_POSITION_AGE_MS = 30000;
 const FLIGHT_STALE_GRACE_MS = 20000;
 const FLIGHT_RENDER_INTERVAL_MS = 1000 / 10;
 const FLIGHT_MAX_ANIMATED_FEATURES = 200;
+const VESSEL_SOURCE_ID = "aisstream-vessels";
+const VESSEL_LAYER_ID = "aisstream-vessel-symbols";
+const VESSEL_HIT_LAYER_ID = "aisstream-vessel-hit";
+const VESSEL_ICON_IMAGE_ID = "vessel-icon-aisstream";
+const VESSEL_POLL_INTERVAL_MS = 30000;
+const TRAFFIC_LAYERS = {
+  flow: {
+    buttonId: "toggleTrafficFlow",
+    sourceId: "tomtom-traffic-flow",
+    layerId: "tomtom-traffic-flow-layer",
+    capabilityKey: "tomTomTrafficFlowEnabled",
+    label: "Traffic flow",
+    tiles: ["/api/traffic/tomtom/flow/{z}/{x}/{y}.png"],
+    opacity: 0.72
+  },
+  incidents: {
+    buttonId: "toggleTrafficIncidents",
+    sourceId: "tomtom-traffic-incidents",
+    layerId: "tomtom-traffic-incidents-layer",
+    capabilityKey: "tomTomTrafficIncidentsEnabled",
+    label: "Traffic incidents",
+    tiles: ["/api/traffic/tomtom/incidents/{z}/{x}/{y}.png"],
+    opacity: 0.9
+  }
+};
 const FLIGHT_PROVIDER_ALIASES = {
   opensky: "opensky",
   adsbx: "adsbx",
@@ -41,6 +66,17 @@ const FLIGHT_ICON_SVGS = {
     </svg>
   `
 };
+const VESSEL_ICON_SVG = `
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+    <path
+      fill="#0891b2"
+      stroke="#ffffff"
+      stroke-width="0.9"
+      stroke-linejoin="round"
+      d="M12 2.6l5.6 8.8-1.3 8.4L12 21.5l-4.3-1.7-1.3-8.4zM9.1 11.4h5.8L12 6.8z"
+    />
+  </svg>
+`;
 
 const flightProviders = {
   opensky: {
@@ -98,6 +134,12 @@ const appState = {
     openSkyEnabled: false,
     adsbExchangeEnabled: false,
     adsbExchangeConfigured: false,
+    aisStreamEnabled: false,
+    aisStreamConfigured: false,
+    tomTomTrafficEnabled: false,
+    tomTomTrafficConfigured: false,
+    tomTomTrafficFlowEnabled: false,
+    tomTomTrafficIncidentsEnabled: false,
     adminTokenRequired: false
   },
   datasets: [],
@@ -129,6 +171,20 @@ const appState = {
   },
   selectedFlight: null,
   flightPopup: null,
+  vesselRuntime: {
+    requestSeq: 0,
+    abortController: null,
+    lastSuccessAtMs: 0,
+    features: emptyFeatureCollection()
+  },
+  vesselsEnabled: false,
+  vesselTimer: null,
+  selectedVessel: null,
+  vesselPopup: null,
+  trafficEnabled: {
+    flow: false,
+    incidents: false
+  },
   suppressFlightPopupClose: false,
   prefersReducedMotion: reducedMotionEnabled(),
   flightMenuOpen: false,
@@ -656,6 +712,14 @@ async function registerFlightImages() {
   );
 }
 
+async function registerVesselImage() {
+  if (!appState.map || appState.map.hasImage(VESSEL_ICON_IMAGE_ID)) {
+    return;
+  }
+  const imageData = await svgMarkupToImageData(VESSEL_ICON_SVG);
+  appState.map.addImage(VESSEL_ICON_IMAGE_ID, imageData, { pixelRatio: 2 });
+}
+
 function setFlightSourceData(providerKey, featureCollection) {
   const provider = flightProviders[providerKey];
   const source = appState.map?.getSource(provider.sourceId);
@@ -666,6 +730,13 @@ function setFlightSourceData(providerKey, featureCollection) {
 
 function setSelectedFlightSource(featureCollection) {
   const source = appState.map?.getSource(FLIGHT_SELECTED_SOURCE_ID);
+  if (source) {
+    source.setData(featureCollection);
+  }
+}
+
+function setVesselSourceData(featureCollection) {
+  const source = appState.map?.getSource(VESSEL_SOURCE_ID);
   if (source) {
     source.setData(featureCollection);
   }
@@ -795,6 +866,106 @@ function ensureFlightLayers() {
   });
 }
 
+function ensureVesselLayers() {
+  if (!appState.map) {
+    return;
+  }
+  if (!appState.map.getSource(VESSEL_SOURCE_ID)) {
+    appState.map.addSource(VESSEL_SOURCE_ID, {
+      type: "geojson",
+      data: emptyFeatureCollection()
+    });
+  }
+  if (!appState.map.getLayer(VESSEL_HIT_LAYER_ID)) {
+    appState.map.addLayer({
+      id: VESSEL_HIT_LAYER_ID,
+      type: "circle",
+      source: VESSEL_SOURCE_ID,
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 5, 8, 12, 15],
+        "circle-opacity": 0.01
+      }
+    });
+  }
+  if (!appState.map.getLayer(VESSEL_LAYER_ID)) {
+    appState.map.addLayer({
+      id: VESSEL_LAYER_ID,
+      type: "symbol",
+      source: VESSEL_SOURCE_ID,
+      layout: {
+        "icon-image": VESSEL_ICON_IMAGE_ID,
+        "icon-size": ["interpolate", ["linear"], ["zoom"], 5, 0.42, 10, 0.56, 13, 0.68],
+        "icon-rotate": ["coalesce", ["get", "headingDeg"], ["get", "cogDeg"], 0],
+        "icon-rotation-alignment": "map",
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+        "text-field": [
+          "step",
+          ["zoom"],
+          "",
+          8,
+          ["coalesce", ["get", "labelPrimary"], ""],
+          11,
+          ["coalesce", ["get", "labelFull"], ["get", "labelPrimary"], ""]
+        ],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": 11,
+        "text-anchor": "left",
+        "text-offset": [1.15, 0],
+        "text-optional": true
+      },
+      paint: {
+        "text-color": "#0f172a",
+        "text-halo-color": "rgba(255, 255, 255, 0.96)",
+        "text-halo-width": 1.4
+      }
+    });
+  }
+}
+
+function ensureTrafficLayer(kind) {
+  const config = TRAFFIC_LAYERS[kind];
+  if (!appState.map || !config) {
+    return;
+  }
+  if (!appState.map.getSource(config.sourceId)) {
+    appState.map.addSource(config.sourceId, {
+      type: "raster",
+      tiles: config.tiles,
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 22,
+      attribution: "Traffic data © TomTom"
+    });
+  }
+  if (!appState.map.getLayer(config.layerId)) {
+    const beforeId = appState.map.getLayer("water-label") ? "water-label" : undefined;
+    appState.map.addLayer(
+      {
+        id: config.layerId,
+        type: "raster",
+        source: config.sourceId,
+        layout: { visibility: appState.trafficEnabled[kind] ? "visible" : "none" },
+        paint: { "raster-opacity": config.opacity }
+      },
+      beforeId
+    );
+  }
+}
+
+function setTrafficLayerVisibility(kind, visible) {
+  const config = TRAFFIC_LAYERS[kind];
+  if (!appState.map || !config) {
+    return;
+  }
+  if (visible) {
+    ensureTrafficLayer(kind);
+  }
+  if (appState.map.getLayer(config.layerId)) {
+    appState.map.setLayoutProperty(config.layerId, "visibility", visible ? "visible" : "none");
+  }
+}
+
 function flightMenuElements() {
   return {
     controls: document.getElementById("flightControls"),
@@ -802,13 +973,24 @@ function flightMenuElements() {
     panel: document.getElementById("flightMenuPanel"),
     buttons: {
       opensky: document.getElementById(flightProviders.opensky.buttonId),
-      adsbx: document.getElementById(flightProviders.adsbx.buttonId)
+      adsbx: document.getElementById(flightProviders.adsbx.buttonId),
+      aisstream: document.getElementById("toggleAisVessels"),
+      trafficFlow: document.getElementById(TRAFFIC_LAYERS.flow.buttonId),
+      trafficIncidents: document.getElementById(TRAFFIC_LAYERS.incidents.buttonId)
     }
   };
 }
 
 function isFlightProviderAvailable(providerKey) {
   return Boolean(appState.capabilities[flightProviders[providerKey].capabilityKey]);
+}
+
+function isVesselProviderAvailable() {
+  return Boolean(appState.capabilities.aisStreamEnabled);
+}
+
+function isTrafficLayerAvailable(kind) {
+  return Boolean(appState.capabilities[TRAFFIC_LAYERS[kind]?.capabilityKey]);
 }
 
 function syncFlightMenuState() {
@@ -869,11 +1051,38 @@ function updateFlightButtons() {
     button.textContent = available ? provider.label : `${provider.label} (Unavailable)`;
   });
 
+  if (buttons.aisstream) {
+    const available = isVesselProviderAvailable();
+    buttons.aisstream.disabled = !available;
+    buttons.aisstream.classList.toggle("active", available && appState.vesselsEnabled);
+    buttons.aisstream.classList.toggle("unavailable", !available);
+    buttons.aisstream.setAttribute("aria-pressed", available && appState.vesselsEnabled ? "true" : "false");
+    buttons.aisstream.textContent = available ? "AIS vessels" : "AIS vessels (Unavailable)";
+  }
+
+  Object.entries(TRAFFIC_LAYERS).forEach(([kind, config]) => {
+    const buttonKey = kind === "flow" ? "trafficFlow" : "trafficIncidents";
+    const button = buttons[buttonKey];
+    if (!button) {
+      return;
+    }
+    const available = isTrafficLayerAvailable(kind);
+    const active = appState.trafficEnabled[kind];
+    button.disabled = !available;
+    button.classList.toggle("active", available && active);
+    button.classList.toggle("unavailable", !available);
+    button.setAttribute("aria-pressed", available && active ? "true" : "false");
+    button.textContent = available ? config.label : `${config.label} (Unavailable)`;
+  });
+
   if (toggle) {
-    const anyActive = Object.keys(flightProviders).some((providerKey) => appState.flightsEnabled[providerKey]);
+    const anyActive =
+      Object.keys(flightProviders).some((providerKey) => appState.flightsEnabled[providerKey]) ||
+      appState.vesselsEnabled ||
+      Object.values(appState.trafficEnabled).some(Boolean);
     const anyAvailable = Object.keys(flightProviders).some((providerKey) =>
       isFlightProviderAvailable(providerKey)
-    );
+    ) || isVesselProviderAvailable() || Object.keys(TRAFFIC_LAYERS).some((kind) => isTrafficLayerAvailable(kind));
     toggle.dataset.state = anyActive ? "active" : anyAvailable ? "idle" : "unavailable";
   }
 
@@ -1458,6 +1667,9 @@ function selectFlightFeature(feature) {
   if (!providerKey || !recordKey) {
     return;
   }
+  if (appState.selectedVessel) {
+    clearSelectedVessel();
+  }
   const entityKey = buildFlightEntityKey(providerKey, recordKey);
   const track = appState.flightRuntime[providerKey].tracks.get(entityKey);
   if (!track) {
@@ -1658,6 +1870,14 @@ function bindFlightMapInteractions() {
     provider.layerId
   ]);
   appState.map.on("click", (event) => {
+    const vesselLayers = [VESSEL_HIT_LAYER_ID, VESSEL_LAYER_ID].filter((layerId) => appState.map.getLayer(layerId));
+    if (vesselLayers.length) {
+      const vesselFeatures = appState.map.queryRenderedFeatures(event.point, { layers: vesselLayers });
+      if (vesselFeatures.length) {
+        selectVesselFeature(vesselFeatures[0]);
+        return;
+      }
+    }
     const features = appState.map.queryRenderedFeatures(event.point, {
       layers: interactionLayers.filter((layerId) => appState.map.getLayer(layerId))
     });
@@ -1668,6 +1888,9 @@ function bindFlightMapInteractions() {
     if (appState.selectedFlight) {
       clearSelectedFlight();
     }
+    if (appState.selectedVessel) {
+      clearSelectedVessel();
+    }
   });
   Object.values(flightProviders).forEach((provider) => {
     [provider.hitLayerId, provider.layerId].forEach((layerId) => {
@@ -1677,6 +1900,14 @@ function bindFlightMapInteractions() {
       appState.map.on("mouseleave", layerId, () => {
         appState.map.getCanvas().style.cursor = "";
       });
+    });
+  });
+  [VESSEL_HIT_LAYER_ID, VESSEL_LAYER_ID].forEach((layerId) => {
+    appState.map.on("mouseenter", layerId, () => {
+      appState.map.getCanvas().style.cursor = "pointer";
+    });
+    appState.map.on("mouseleave", layerId, () => {
+      appState.map.getCanvas().style.cursor = "";
     });
   });
 }
@@ -1782,6 +2013,246 @@ function toggleFlight(providerKey) {
   } else {
     stopFlightPolling(providerKey);
   }
+}
+
+async function refreshVessels(suppressErrors = false) {
+  if (!appState.vesselsEnabled || !appState.map || !appState.map.isStyleLoaded()) {
+    return;
+  }
+  const runtime = appState.vesselRuntime;
+  runtime.abortController?.abort();
+  runtime.requestSeq += 1;
+  const requestSeq = runtime.requestSeq;
+  const controller = new AbortController();
+  runtime.abortController = controller;
+  const query = currentBoundsQuery();
+  try {
+    const data = await requestJson(`/api/vessels/aisstream?${new URLSearchParams(query).toString()}`, {
+      signal: controller.signal
+    });
+    if (runtime.requestSeq !== requestSeq || controller.signal.aborted || !appState.vesselsEnabled) {
+      return;
+    }
+    runtime.lastSuccessAtMs = Date.now();
+    runtime.features = data;
+    setVesselSourceData(data);
+    if (appState.selectedVessel) {
+      renderSelectedVesselPopup();
+    }
+  } catch (error) {
+    if (error.name === "AbortError") {
+      return;
+    }
+    if (!suppressErrors) {
+      showMessage(error.message, "warn");
+    }
+  }
+}
+
+function stopVesselPolling() {
+  window.clearInterval(appState.vesselTimer);
+  appState.vesselTimer = null;
+  appState.vesselRuntime.abortController?.abort();
+  appState.vesselRuntime.features = emptyFeatureCollection();
+  setVesselSourceData(emptyFeatureCollection());
+  clearSelectedVessel();
+}
+
+function toggleVessels() {
+  if (!isVesselProviderAvailable()) {
+    return;
+  }
+  if (!appState.map || !appState.map.isStyleLoaded()) {
+    showMessage("Map is still loading. Try again in a moment.", "warn");
+    return;
+  }
+  appState.vesselsEnabled = !appState.vesselsEnabled;
+  updateFlightButtons();
+  if (appState.vesselsEnabled) {
+    ensureVesselLayers();
+    refreshVessels();
+    appState.vesselTimer = window.setInterval(() => refreshVessels(true), VESSEL_POLL_INTERVAL_MS);
+  } else {
+    stopVesselPolling();
+  }
+}
+
+function toggleTrafficLayer(kind) {
+  if (!isTrafficLayerAvailable(kind)) {
+    return;
+  }
+  if (!appState.map || !appState.map.isStyleLoaded()) {
+    showMessage("Map is still loading. Try again in a moment.", "warn");
+    return;
+  }
+  appState.trafficEnabled[kind] = !appState.trafficEnabled[kind];
+  setTrafficLayerVisibility(kind, appState.trafficEnabled[kind]);
+  updateFlightButtons();
+}
+
+function ensureVesselPopup() {
+  if (appState.vesselPopup) {
+    return appState.vesselPopup;
+  }
+  appState.vesselPopup = new maplibregl.Popup({
+    closeOnClick: false,
+    className: "flight-popup",
+    maxWidth: "360px"
+  });
+  appState.vesselPopup.on("close", () => {
+    clearSelectedVessel();
+  });
+  return appState.vesselPopup;
+}
+
+function buildVesselPopupContent(selectedVessel) {
+  const summary = selectedVessel.detail?.summary || selectedVessel.summary || {};
+  const wrapper = document.createElement("div");
+  wrapper.className = "flight-popup-card";
+
+  const header = document.createElement("div");
+  header.className = "flight-popup-header";
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "flight-popup-title";
+  const title = document.createElement("strong");
+  title.textContent = summary.vesselName || summary.labelPrimary || summary.mmsi || "Vessel";
+  const subtitle = document.createElement("span");
+  subtitle.textContent = summary.providerLabel || "AISStream";
+  titleWrap.append(title, subtitle);
+  const status = document.createElement("span");
+  status.className = "flight-popup-status";
+  status.dataset.state = "tracked";
+  status.textContent = "Live";
+  header.append(titleWrap, status);
+  wrapper.append(header);
+
+  const grid = document.createElement("div");
+  grid.className = "flight-popup-grid";
+  [
+    popupRow("MMSI", summary.mmsi || summary.displayId),
+    popupRow("Call sign", summary.callsign),
+    popupRow("IMO", summary.imo),
+    popupRow("Type", summary.shipType),
+    popupRow("Navigation", summary.navStatus),
+    popupRow("Speed", summary.sogKts != null ? `${formatFlightValue(summary.sogKts, 1)} kt` : null),
+    popupRow("Course", summary.cogDeg != null ? `${formatFlightValue(summary.cogDeg)} deg` : null),
+    popupRow("Heading", summary.headingDeg != null ? `${formatFlightValue(summary.headingDeg)} deg` : null),
+    popupRow("Position age", formatFlightAge(summary.positionAgeMsAtFetch)),
+    popupRow(
+      "Coordinates",
+      summary.latitude != null && summary.longitude != null
+        ? `${formatFlightValue(summary.latitude, 4)}, ${formatFlightValue(summary.longitude, 4)}`
+        : null
+    )
+  ]
+    .filter(Boolean)
+    .forEach((row) => grid.append(row));
+  wrapper.append(grid);
+
+  if (selectedVessel.detailLoading || selectedVessel.detailUnavailable) {
+    const detailState = document.createElement("div");
+    detailState.className = "flight-popup-detail-state";
+    detailState.textContent = selectedVessel.detailLoading
+      ? "Loading expanded detail..."
+      : selectedVessel.detailUnavailable;
+    if (selectedVessel.detailUnavailable) {
+      detailState.dataset.tone = "warn";
+    }
+    wrapper.append(detailState);
+  }
+
+  if (selectedVessel.detail?.raw) {
+    const details = document.createElement("details");
+    details.className = "flight-popup-raw";
+    const summaryNode = document.createElement("summary");
+    summaryNode.textContent = "All API fields";
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(selectedVessel.detail.raw, null, 2);
+    details.append(summaryNode, pre);
+    wrapper.append(details);
+  }
+  return wrapper;
+}
+
+function renderSelectedVesselPopup() {
+  if (!appState.selectedVessel || !appState.map) {
+    return;
+  }
+  const popup = ensureVesselPopup();
+  popup.setDOMContent(buildVesselPopupContent(appState.selectedVessel));
+  popup.setLngLat(appState.selectedVessel.lngLat);
+  if (!popup.isOpen()) {
+    popup.addTo(appState.map);
+  }
+}
+
+function clearSelectedVessel() {
+  appState.selectedVessel?.detailAbortController?.abort();
+  appState.selectedVessel = null;
+  if (appState.vesselPopup?.isOpen()) {
+    appState.vesselPopup.remove();
+  }
+}
+
+function requestSelectedVesselDetail() {
+  const selected = appState.selectedVessel;
+  if (!selected?.recordKey) {
+    return;
+  }
+  selected.detailAbortController?.abort();
+  const controller = new AbortController();
+  selected.detailAbortController = controller;
+  selected.detailLoading = true;
+  selected.detailUnavailable = null;
+  renderSelectedVesselPopup();
+  const params = new URLSearchParams({
+    providerKey: "aisstream",
+    recordKey: selected.recordKey
+  });
+  requestJson(`/api/vessels/detail?${params.toString()}`, { signal: controller.signal })
+    .then((detail) => {
+      if (!appState.selectedVessel || appState.selectedVessel.entityKey !== selected.entityKey) {
+        return;
+      }
+      appState.selectedVessel.detail = detail;
+      appState.selectedVessel.detailLoading = false;
+      renderSelectedVesselPopup();
+    })
+    .catch((error) => {
+      if (error.name === "AbortError") {
+        return;
+      }
+      if (!appState.selectedVessel || appState.selectedVessel.entityKey !== selected.entityKey) {
+        return;
+      }
+      appState.selectedVessel.detailLoading = false;
+      appState.selectedVessel.detailUnavailable = error.message;
+      renderSelectedVesselPopup();
+    });
+}
+
+function selectVesselFeature(feature) {
+  const properties = feature?.properties || {};
+  const coordinates = feature?.geometry?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length < 2 || !properties.recordKey) {
+    return;
+  }
+  if (appState.selectedFlight) {
+    clearSelectedFlight();
+  }
+  appState.selectedVessel = {
+    providerKey: "aisstream",
+    recordKey: properties.recordKey,
+    entityKey: properties.entityKey,
+    summary: { ...properties, latitude: coordinates[1], longitude: coordinates[0] },
+    lngLat: [coordinates[0], coordinates[1]],
+    detail: null,
+    detailLoading: false,
+    detailUnavailable: null,
+    detailAbortController: null
+  };
+  renderSelectedVesselPopup();
+  requestSelectedVesselDetail();
 }
 
 async function runSearch() {
@@ -2161,6 +2632,9 @@ function bindDomEvents() {
   });
   document.getElementById("toggleOpenSky").addEventListener("click", () => toggleFlight("opensky"));
   document.getElementById("toggleAdsbx").addEventListener("click", () => toggleFlight("adsbx"));
+  document.getElementById("toggleAisVessels").addEventListener("click", () => toggleVessels());
+  document.getElementById("toggleTrafficFlow").addEventListener("click", () => toggleTrafficLayer("flow"));
+  document.getElementById("toggleTrafficIncidents").addEventListener("click", () => toggleTrafficLayer("incidents"));
   document.getElementById("catalogResults").addEventListener("click", (event) => {
     const button = event.target.closest("[data-install-id]");
     if (!button) {
@@ -2221,7 +2695,9 @@ async function initMap() {
   appState.map.addControl(new maplibregl.NavigationControl(), "top-right");
   appState.map.on("load", async () => {
     await registerFlightImages();
+    await registerVesselImage();
     ensureFlightLayers();
+    ensureVesselLayers();
     bindFlightMapInteractions();
     applySelectedAreaOverlay();
     if (currentAreaBounds) {
@@ -2238,6 +2714,9 @@ async function initMap() {
     }
     if (appState.flightsEnabled.adsbx) {
       refreshFlights("adsbx", true);
+    }
+    if (appState.vesselsEnabled) {
+      refreshVessels(true);
     }
   });
 }

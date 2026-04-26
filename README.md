@@ -17,6 +17,22 @@ SHM_OPENSKY_CLIENT_SECRET="your-api-client-secret"
 
 The optional `SHM_OPENSKY_TOKEN_URL` defaults to OpenSky's OAuth2 client-credentials token endpoint. Restart `self-hosted-maps-api` after changing runtime credentials.
 
+Live vessel and road-traffic overlays are disabled by default and keep provider keys server-side in the local API. To enable AIS vessel positions from AISStream:
+
+```sh
+SHM_AISSTREAM_ENABLED="1"
+SHM_AISSTREAM_API_KEY="your-aisstream-key"
+```
+
+To enable TomTom traffic flow and incident raster overlays:
+
+```sh
+SHM_TOMTOM_TRAFFIC_ENABLED="1"
+SHM_TOMTOM_API_KEY="your-tomtom-key"
+```
+
+TomTom tiles are proxied through `/api/traffic/tomtom/...` so the browser never receives the API key. Restart `self-hosted-maps-api` after changing these runtime settings.
+
 ## Application Updates
 
 Installed systems include a local updater so you do not need to recreate the Debian host for application changes. Update your source checkout first, then run:

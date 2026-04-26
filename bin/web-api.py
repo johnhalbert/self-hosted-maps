@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 import argparse
+import base64
+import hashlib
 import json
 import math
 import os
+import secrets
+import socket
 import subprocess
+import ssl
+import struct
 import sys
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +46,11 @@ JSON_FILE_CACHE = {}
 OPENSKY_DEFAULT_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
 OPENSKY_TOKEN_REFRESH_SKEW_SECONDS = 60
 OPENSKY_TOKEN_FALLBACK_EXPIRES_SECONDS = 1500
+AISSTREAM_DEFAULT_URL = "wss://stream.aisstream.io/v0/stream"
+AISSTREAM_MAX_BBOX_AREA = 100
+TOMTOM_DEFAULT_BASE_URL = "https://api.tomtom.com"
+TOMTOM_TRAFFIC_MAX_ZOOM = 22
+TOMTOM_TRAFFIC_MAX_TILE_BYTES = 1_500_000
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -592,11 +604,20 @@ def build_selected_area_response():
 
 def build_capabilities():
     adsb_key = os.environ.get("SHM_ADSBEXCHANGE_API_KEY", "").strip()
+    ais_key = os.environ.get("SHM_AISSTREAM_API_KEY", "").strip()
+    tomtom_key = tomtom_api_key()
+    tomtom_enabled = env_bool("SHM_TOMTOM_TRAFFIC_ENABLED", False) and bool(tomtom_key)
     return {
         "addressSearchEnabled": env_bool("SHM_ADDRESS_SEARCH_ENABLED", True),
         "openSkyEnabled": env_bool("SHM_OPENSKY_ENABLED", True),
         "adsbExchangeEnabled": env_bool("SHM_ADSBEXCHANGE_ENABLED", False) and bool(adsb_key),
         "adsbExchangeConfigured": bool(adsb_key),
+        "aisStreamEnabled": env_bool("SHM_AISSTREAM_ENABLED", False) and bool(ais_key),
+        "aisStreamConfigured": bool(ais_key),
+        "tomTomTrafficEnabled": tomtom_enabled,
+        "tomTomTrafficConfigured": bool(tomtom_key),
+        "tomTomTrafficFlowEnabled": tomtom_enabled and env_bool("SHM_TOMTOM_TRAFFIC_FLOW_ENABLED", True),
+        "tomTomTrafficIncidentsEnabled": tomtom_enabled and env_bool("SHM_TOMTOM_TRAFFIC_INCIDENTS_ENABLED", True),
         "adminTokenRequired": bool(os.environ.get("SHM_ADMIN_TOKEN", "").strip()),
     }
 
@@ -605,6 +626,19 @@ def http_get_json(url: str, headers=None, timeout: int = 15):
     request = urlrequest.Request(url, headers=headers or {})
     with urlrequest.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def http_get_bytes(url: str, headers=None, timeout: int = 15, max_bytes=None):
+    request = urlrequest.Request(url, headers=headers or {})
+    with urlrequest.urlopen(request, timeout=timeout) as response:
+        content_type = response.headers.get("Content-Type", "")
+        if max_bytes is None:
+            body = response.read()
+        else:
+            body = response.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise RuntimeError("Upstream response exceeded the configured size limit.")
+        return body, content_type
 
 
 def http_post_form_json(url: str, form, headers=None, timeout: int = 15):
@@ -1277,6 +1311,637 @@ def build_flight_detail_response(provider_key, record_key):
     }
 
 
+def tomtom_api_key():
+    return (
+        os.environ.get("SHM_TOMTOM_TRAFFIC_API_KEY", "").strip()
+        or os.environ.get("SHM_TOMTOM_API_KEY", "").strip()
+    )
+
+
+def env_int(name, default, minimum=None, maximum=None):
+    try:
+        value = int(os.environ.get(name, str(default)).strip())
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def validate_tile_coord(z, x, y):
+    try:
+        z = int(z)
+        x = int(x)
+        y = int(y)
+    except (TypeError, ValueError):
+        raise ValueError("Traffic tile coordinates must be integers.")
+    if z < 0 or z > TOMTOM_TRAFFIC_MAX_ZOOM:
+        raise ValueError(f"Traffic tile zoom must be between 0 and {TOMTOM_TRAFFIC_MAX_ZOOM}.")
+    tile_limit = 2**z
+    if x < 0 or y < 0 or x >= tile_limit or y >= tile_limit:
+        raise ValueError("Traffic tile coordinates are outside the zoom grid.")
+    return z, x, y
+
+
+def parse_tomtom_tile_path(path):
+    parts = path.strip("/").split("/")
+    if len(parts) != 7 or parts[:3] != ["api", "traffic", "tomtom"]:
+        return None
+    kind = parts[3]
+    if kind not in {"flow", "incidents"}:
+        raise ValueError("Traffic tile kind must be flow or incidents.")
+    y_part = parts[6]
+    if not y_part.endswith(".png"):
+        raise ValueError("Traffic tile requests must end in .png.")
+    z, x, y = validate_tile_coord(parts[4], parts[5], y_part[:-4])
+    return kind, z, x, y
+
+
+def tomtom_traffic_style(kind):
+    if kind == "flow":
+        value = os.environ.get("SHM_TOMTOM_TRAFFIC_FLOW_STYLE", "relative0").strip() or "relative0"
+        allowed = {"absolute", "relative", "relative0", "relative0-dark"}
+    else:
+        value = os.environ.get("SHM_TOMTOM_TRAFFIC_INCIDENT_STYLE", "s3").strip() or "s3"
+        allowed = {"s0", "s0-dark", "s1", "s2", "s3"}
+    if value not in allowed:
+        raise ValueError(f"Unsupported TomTom traffic {kind} style.")
+    return value
+
+
+def build_tomtom_traffic_tile_url(kind, z, x, y):
+    api_key = tomtom_api_key()
+    if not env_bool("SHM_TOMTOM_TRAFFIC_ENABLED", False):
+        raise RuntimeError("TomTom traffic is disabled.")
+    if not api_key:
+        raise RuntimeError("TomTom traffic API key is not configured.")
+    if kind == "flow" and not env_bool("SHM_TOMTOM_TRAFFIC_FLOW_ENABLED", True):
+        raise RuntimeError("TomTom traffic flow is disabled.")
+    if kind == "incidents" and not env_bool("SHM_TOMTOM_TRAFFIC_INCIDENTS_ENABLED", True):
+        raise RuntimeError("TomTom traffic incidents are disabled.")
+    style = tomtom_traffic_style(kind)
+    base_url = (
+        os.environ.get("SHM_TOMTOM_TRAFFIC_API_BASE_URL", "").strip()
+        or os.environ.get("SHM_TOMTOM_API_BASE_URL", TOMTOM_DEFAULT_BASE_URL).strip()
+        or TOMTOM_DEFAULT_BASE_URL
+    ).rstrip("/")
+    path_kind = "flow" if kind == "flow" else "incidents"
+    query = urlparse.urlencode({"key": api_key, "tileSize": "256"})
+    return f"{base_url}/traffic/map/4/tile/{path_kind}/{style}/{z}/{x}/{y}.png?{query}"
+
+
+class TrafficTileCache:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._entries = OrderedDict()
+
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+
+    def get(self, key, now=None):
+        now = float(time.time() if now is None else now)
+        with self._lock:
+            entry = self._entries.get(key)
+            if not entry:
+                return None
+            if entry["expires_at"] <= now:
+                self._entries.pop(key, None)
+                return None
+            self._entries.move_to_end(key)
+            return entry["body"], entry["content_type"]
+
+    def put(self, key, body, content_type, now=None):
+        if not body or len(body) > TOMTOM_TRAFFIC_MAX_TILE_BYTES:
+            raise RuntimeError("Traffic tile response is too large.")
+        now = float(time.time() if now is None else now)
+        ttl = env_int("SHM_TOMTOM_TRAFFIC_TILE_TTL_SECONDS", 30, minimum=1, maximum=600)
+        max_entries = env_int("SHM_TOMTOM_TRAFFIC_CACHE_MAX_ENTRIES", 512, minimum=16, maximum=4096)
+        with self._lock:
+            self._entries[key] = {
+                "body": body,
+                "content_type": content_type,
+                "expires_at": now + ttl,
+            }
+            self._entries.move_to_end(key)
+            while len(self._entries) > max_entries:
+                self._entries.popitem(last=False)
+
+
+TOMTOM_TRAFFIC_TILE_CACHE = TrafficTileCache()
+
+
+def fetch_tomtom_traffic_tile(kind, z, x, y):
+    z, x, y = validate_tile_coord(z, x, y)
+    style = tomtom_traffic_style(kind)
+    url = build_tomtom_traffic_tile_url(kind, z, x, y)
+    cache_key = (kind, style, z, x, y)
+    cached = TOMTOM_TRAFFIC_TILE_CACHE.get(cache_key)
+    if cached:
+        body, content_type = cached
+        return {"body": body, "contentType": content_type, "cache": "hit"}
+
+    body, content_type = http_get_bytes(
+        url,
+        headers={"User-Agent": "self-hosted-maps/1.0", "Accept": "image/png"},
+        timeout=15,
+        max_bytes=TOMTOM_TRAFFIC_MAX_TILE_BYTES,
+    )
+    normalized_type = content_type.split(";", 1)[0].strip().lower()
+    if normalized_type != "image/png":
+        raise RuntimeError("TomTom traffic tile response was not a PNG image.")
+    TOMTOM_TRAFFIC_TILE_CACHE.put(cache_key, body, "image/png")
+    return {"body": body, "contentType": "image/png", "cache": "miss"}
+
+
+def require_aisstream_enabled():
+    if not env_bool("SHM_AISSTREAM_ENABLED", False):
+        raise RuntimeError("AISStream is disabled.")
+    api_key = os.environ.get("SHM_AISSTREAM_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("AISStream API key is not configured.")
+    return api_key
+
+
+def validate_ais_bbox(query):
+    try:
+        south = float(query.get("lamin", [""])[0])
+        west = float(query.get("lomin", [""])[0])
+        north = float(query.get("lamax", [""])[0])
+        east = float(query.get("lomax", [""])[0])
+    except (TypeError, ValueError):
+        raise ValueError("lamin, lomin, lamax, and lomax are required.")
+    if not (-90 <= south <= 90 and -90 <= north <= 90 and -180 <= west <= 180 and -180 <= east <= 180):
+        raise ValueError("AIS bounding box coordinates are outside valid latitude/longitude ranges.")
+    if south >= north or west >= east:
+        raise ValueError("AIS bounding boxes must not cross the antimeridian and must have positive area.")
+    area = abs((north - south) * (east - west))
+    if area > AISSTREAM_MAX_BBOX_AREA:
+        raise ValueError("Requested AIS area is too large. Zoom in and try again.")
+    return {"south": south, "west": west, "north": north, "east": east}
+
+
+def ais_subscription_key(bounds):
+    quantum = 0.01
+    south = max(-90, math.floor(bounds["south"] / quantum) * quantum)
+    west = max(-180, math.floor(bounds["west"] / quantum) * quantum)
+    north = min(90, math.ceil(bounds["north"] / quantum) * quantum)
+    east = min(180, math.ceil(bounds["east"] / quantum) * quantum)
+    if south >= north:
+        south = max(-90, bounds["south"] - quantum)
+        north = min(90, bounds["north"] + quantum)
+    if west >= east:
+        west = max(-180, bounds["west"] - quantum)
+        east = min(180, bounds["east"] + quantum)
+    return tuple(round(value, 2) for value in (south, west, north, east))
+
+
+def build_aisstream_subscription(api_key, bounds):
+    return {
+        "APIKey": api_key,
+        "BoundingBoxes": [[[bounds["south"], bounds["west"]], [bounds["north"], bounds["east"]]]],
+        "FilterMessageTypes": ["PositionReport", "StandardClassBPositionReport"],
+    }
+
+
+def parse_wss_url(url):
+    parsed = urlparse.urlparse(url)
+    if parsed.scheme != "wss" or not parsed.hostname:
+        raise ValueError("AISStream URL must be a wss:// URL.")
+    return parsed.hostname, parsed.port or 443, parsed.path or "/", parsed.query
+
+
+def websocket_accept_key(client_key):
+    digest = hashlib.sha1((client_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def websocket_encode_frame(payload, opcode=1):
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    length = len(payload)
+    header = bytearray([0x80 | opcode])
+    if length < 126:
+        header.append(0x80 | length)
+    elif length <= 0xFFFF:
+        header.extend([0x80 | 126])
+        header.extend(struct.pack("!H", length))
+    else:
+        header.extend([0x80 | 127])
+        header.extend(struct.pack("!Q", length))
+    mask = secrets.token_bytes(4)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    return bytes(header) + mask + masked
+
+
+def _recv_exact(sock, length):
+    chunks = []
+    remaining = length
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise ConnectionError("WebSocket connection closed unexpectedly.")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def websocket_read_frame(sock):
+    header = _recv_exact(sock, 2)
+    fin = bool(header[0] & 0x80)
+    opcode = header[0] & 0x0F
+    masked = bool(header[1] & 0x80)
+    length = header[1] & 0x7F
+    if length == 126:
+        length = struct.unpack("!H", _recv_exact(sock, 2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", _recv_exact(sock, 8))[0]
+    mask = _recv_exact(sock, 4) if masked else b""
+    payload = _recv_exact(sock, length) if length else b""
+    if masked:
+        payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    return {"fin": fin, "opcode": opcode, "payload": payload}
+
+
+def websocket_connect(url, timeout=20):
+    host, port, path, query = parse_wss_url(url)
+    request_path = path + (f"?{query}" if query else "")
+    raw = socket.create_connection((host, port), timeout=timeout)
+    context = ssl.create_default_context()
+    tls_sock = context.wrap_socket(raw, server_hostname=host)
+    tls_sock.settimeout(timeout)
+    client_key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
+    request = (
+        f"GET {request_path} HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {client_key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "User-Agent: self-hosted-maps/1.0\r\n"
+        "\r\n"
+    )
+    tls_sock.sendall(request.encode("ascii"))
+    response = b""
+    while b"\r\n\r\n" not in response:
+        chunk = tls_sock.recv(4096)
+        if not chunk:
+            tls_sock.close()
+            raise RuntimeError("AISStream WebSocket handshake closed before headers were received.")
+        response += chunk
+        if len(response) > 32768:
+            tls_sock.close()
+            raise RuntimeError("AISStream WebSocket handshake response was too large.")
+    header_text = response.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
+    lines = header_text.split("\r\n")
+    if not lines or " 101 " not in lines[0]:
+        tls_sock.close()
+        raise RuntimeError("AISStream WebSocket handshake was rejected.")
+    headers = {}
+    for line in lines[1:]:
+        if ":" in line:
+            key, value = line.split(":", 1)
+            headers[key.strip().lower()] = value.strip()
+    if headers.get("sec-websocket-accept") != websocket_accept_key(client_key):
+        tls_sock.close()
+        raise RuntimeError("AISStream WebSocket handshake accept key was invalid.")
+    return tls_sock
+
+
+def _pick_nested(mapping, *paths):
+    for path in paths:
+        cursor = mapping
+        for key in path:
+            if not isinstance(cursor, dict) or key not in cursor:
+                cursor = None
+                break
+            cursor = cursor[key]
+        if cursor not in (None, ""):
+            return cursor
+    return None
+
+
+def normalize_ais_nav_status(value):
+    status_map = {
+        0: "Under way using engine",
+        1: "At anchor",
+        2: "Not under command",
+        3: "Restricted manoeuverability",
+        4: "Constrained by draft",
+        5: "Moored",
+        6: "Aground",
+        7: "Fishing",
+        8: "Sailing",
+        15: "Undefined",
+    }
+    number = maybe_float(value)
+    if number is None:
+        return clean_text(value)
+    return status_map.get(int(number), str(int(number)))
+
+
+def normalize_aisstream_message(payload, fetched_at_ms=None):
+    if not isinstance(payload, dict):
+        return None
+    fetched_at_ms = int(fetched_at_ms or current_time_ms())
+    message = payload.get("Message") or {}
+    position = (
+        message.get("PositionReport")
+        or message.get("StandardClassBPositionReport")
+        or message.get("ExtendedClassBPositionReport")
+        or {}
+    )
+    metadata = payload.get("MetaData") or {}
+    mmsi = clean_text(
+        _pick_nested(payload, ("MMSI",), ("mmsi",))
+        or _pick_nested(metadata, ("MMSI",), ("Mmsi",), ("mmsi",))
+        or _pick_nested(position, ("UserID",), ("UserId",), ("MMSI",), ("Mmsi",))
+    )
+    if not mmsi:
+        return None
+    latitude = maybe_float(
+        _pick_nested(position, ("Latitude",), ("latitude",)) or _pick_nested(metadata, ("latitude",), ("Latitude",))
+    )
+    longitude = maybe_float(
+        _pick_nested(position, ("Longitude",), ("longitude",)) or _pick_nested(metadata, ("longitude",), ("Longitude",))
+    )
+    if latitude is None or longitude is None:
+        return None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    record_key = normalize_record_key(mmsi)
+    entity_key = f"aisstream:{record_key}"
+    vessel_name = clean_text(_pick_nested(metadata, ("ShipName",), ("shipName",)) or _pick_nested(position, ("ShipName",)))
+    callsign = clean_text(_pick_nested(metadata, ("CallSign",), ("callsign",)) or _pick_nested(position, ("CallSign",)))
+    imo = clean_text(_pick_nested(metadata, ("IMO",), ("imo",)) or _pick_nested(position, ("IMO",)))
+    ship_type = clean_text(_pick_nested(metadata, ("ShipType",), ("shipType",)) or _pick_nested(position, ("ShipType",)))
+    sog_kts = maybe_float(_pick_nested(position, ("Sog",), ("SOG",), ("SpeedOverGround",)))
+    cog_deg = maybe_float(_pick_nested(position, ("Cog",), ("COG",), ("CourseOverGround",)))
+    heading_deg = maybe_float(_pick_nested(position, ("TrueHeading",), ("Heading",)))
+    if heading_deg == 511:
+        heading_deg = None
+    nav_status = normalize_ais_nav_status(_pick_nested(position, ("NavigationalStatus",), ("NavStatus",)))
+    label_primary = vessel_name or callsign or mmsi
+    label_full = f"{label_primary} • {mmsi}" if label_primary != mmsi else mmsi
+    properties = {
+        "provider": "aisstream",
+        "providerKey": "aisstream",
+        "providerLabel": "AISStream",
+        "id": mmsi,
+        "recordKey": record_key,
+        "entityKey": entity_key,
+        "displayId": mmsi,
+        "mmsi": mmsi,
+        "imo": imo,
+        "callsign": callsign,
+        "vesselName": vessel_name,
+        "shipType": ship_type,
+        "navStatus": nav_status,
+        "sogKts": sog_kts,
+        "groundSpeedKts": sog_kts,
+        "cogDeg": cog_deg,
+        "headingDeg": heading_deg if heading_deg is not None else cog_deg,
+        "positionTimestampMs": fetched_at_ms,
+        "lastSeenTimestampMs": fetched_at_ms,
+        "positionAgeMsAtFetch": 0,
+        "contactAgeMsAtFetch": 0,
+        "labelPrimary": label_primary,
+        "labelFull": label_full,
+        "detailAvailable": True,
+    }
+    feature = {
+        "type": "Feature",
+        "id": entity_key,
+        "geometry": {"type": "Point", "coordinates": [longitude, latitude]},
+        "properties": properties,
+    }
+    detail = {
+        "provider": "aisstream",
+        "providerKey": "aisstream",
+        "recordKey": record_key,
+        "entityKey": entity_key,
+        "fetchedAtMs": fetched_at_ms,
+        "summary": {
+            "providerLabel": "AISStream",
+            "labelPrimary": label_primary,
+            "labelFull": label_full,
+            "displayId": mmsi,
+            "mmsi": mmsi,
+            "imo": imo,
+            "callsign": callsign,
+            "vesselName": vessel_name,
+            "shipType": ship_type,
+            "navStatus": nav_status,
+            "latitude": latitude,
+            "longitude": longitude,
+            "sogKts": sog_kts,
+            "cogDeg": cog_deg,
+            "headingDeg": heading_deg,
+            "positionTimestampMs": fetched_at_ms,
+            "lastSeenTimestampMs": fetched_at_ms,
+            "positionAgeMsAtFetch": 0,
+            "contactAgeMsAtFetch": 0,
+        },
+        "raw": {"schema": "aisstream.message.v1", "data": sanitize_json_value(payload)},
+    }
+    return {"feature": feature, "detail": detail, "recordKey": record_key}
+
+
+class AisSnapshotCache:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._records = {}
+
+    def clear(self):
+        with self._lock:
+            self._records.clear()
+
+    def update(self, payload, fetched_at_ms=None):
+        fetched_at_ms = int(fetched_at_ms or current_time_ms())
+        record = normalize_aisstream_message(payload, fetched_at_ms=fetched_at_ms)
+        if not record:
+            return False
+        ttl_ms = env_int("SHM_AISSTREAM_CACHE_TTL_SECONDS", 120, minimum=10, maximum=1800) * 1000
+        with self._lock:
+            self._records[record["recordKey"]] = {
+                "feature": record["feature"],
+                "detail": record["detail"],
+                "expiresAtMs": fetched_at_ms + ttl_ms,
+            }
+            self._prune_locked(fetched_at_ms)
+        return True
+
+    def snapshot(self, bounds=None, now_ms=None):
+        now_ms = int(now_ms or current_time_ms())
+        with self._lock:
+            self._prune_locked(now_ms)
+            features = []
+            for entry in self._records.values():
+                feature = json.loads(json.dumps(entry["feature"]))
+                coords = feature.get("geometry", {}).get("coordinates") or []
+                if bounds and len(coords) >= 2:
+                    lng, lat = coords[0], coords[1]
+                    if not (bounds["west"] <= lng <= bounds["east"] and bounds["south"] <= lat <= bounds["north"]):
+                        continue
+                props = feature.setdefault("properties", {})
+                last_seen = maybe_float(props.get("lastSeenTimestampMs"))
+                age = max(0, now_ms - int(last_seen)) if last_seen is not None else None
+                props["positionAgeMsAtFetch"] = age
+                props["contactAgeMsAtFetch"] = age
+                features.append(feature)
+            return features
+
+    def get(self, record_key, now_ms=None):
+        now_ms = int(now_ms or current_time_ms())
+        normalized = normalize_record_key(record_key)
+        with self._lock:
+            self._prune_locked(now_ms)
+            entry = self._records.get(normalized)
+            if not entry:
+                return None
+            return json.loads(json.dumps(entry["detail"]))
+
+    def _prune_locked(self, now_ms):
+        expired = [record_key for record_key, entry in self._records.items() if entry["expiresAtMs"] <= now_ms]
+        for record_key in expired:
+            self._records.pop(record_key, None)
+
+
+AIS_SNAPSHOT_CACHE = AisSnapshotCache()
+
+
+class AisStreamService:
+    def __init__(self, cache):
+        self._cache = cache
+        self._lock = threading.Lock()
+        self._thread = None
+        self._stop_event = None
+        self._subscription_key = None
+        self._status = "idle"
+        self._last_error = None
+        self._started_at_ms = None
+
+    def ensure_subscription(self, bounds):
+        api_key = require_aisstream_enabled()
+        key = ais_subscription_key(bounds)
+        with self._lock:
+            if self._thread and self._thread.is_alive() and self._subscription_key == key:
+                return
+            if self._stop_event:
+                self._stop_event.set()
+            stop_event = threading.Event()
+            self._stop_event = stop_event
+            self._subscription_key = key
+            self._status = "connecting"
+            self._last_error = None
+            self._started_at_ms = current_time_ms()
+            subscription_bounds = {
+                "south": key[0],
+                "west": key[1],
+                "north": key[2],
+                "east": key[3],
+            }
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(api_key, subscription_bounds, stop_event),
+                daemon=True,
+            )
+            self._thread.start()
+
+    def meta(self):
+        with self._lock:
+            return {
+                "status": self._status,
+                "lastError": self._last_error,
+                "subscriptionKey": list(self._subscription_key) if self._subscription_key else None,
+                "startedAtMs": self._started_at_ms,
+            }
+
+    def _set_status(self, status, error=None):
+        with self._lock:
+            self._status = status
+            self._last_error = str(error) if error else None
+
+    def _run(self, api_key, bounds, stop_event):
+        url = os.environ.get("SHM_AISSTREAM_URL", AISSTREAM_DEFAULT_URL).strip() or AISSTREAM_DEFAULT_URL
+        subscription = build_aisstream_subscription(api_key, bounds)
+        backoff_seconds = 2
+        while not stop_event.is_set():
+            sock = None
+            try:
+                sock = websocket_connect(url, timeout=20)
+                sock.sendall(websocket_encode_frame(json.dumps(subscription), opcode=1))
+                self._set_status("streaming")
+                backoff_seconds = 2
+                while not stop_event.is_set():
+                    frame = websocket_read_frame(sock)
+                    opcode = frame["opcode"]
+                    if opcode == 1:
+                        payload = json.loads(frame["payload"].decode("utf-8"))
+                        self._cache.update(payload)
+                    elif opcode == 8:
+                        break
+                    elif opcode == 9:
+                        sock.sendall(websocket_encode_frame(frame["payload"], opcode=10))
+            except Exception as exc:
+                if not stop_event.is_set():
+                    self._set_status("error", exc)
+                    stop_event.wait(backoff_seconds)
+                    backoff_seconds = min(backoff_seconds * 2, 60)
+            finally:
+                if sock:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+        self._set_status("stopped")
+
+
+AIS_STREAM_SERVICE = AisStreamService(AIS_SNAPSHOT_CACHE)
+
+
+def fetch_aisstream_vessels(query):
+    bounds = validate_ais_bbox(query)
+    AIS_STREAM_SERVICE.ensure_subscription(bounds)
+    now_ms = current_time_ms()
+    return {
+        "type": "FeatureCollection",
+        "features": AIS_SNAPSHOT_CACHE.snapshot(bounds=bounds, now_ms=now_ms),
+        "meta": {
+            "providerKey": "aisstream",
+            "providerLabel": "AISStream",
+            "fetchedAtMs": now_ms,
+            "bounds": bounds,
+            **AIS_STREAM_SERVICE.meta(),
+        },
+    }
+
+
+def build_vessel_detail_response(provider_key, record_key):
+    provider_key = str(provider_key or "").strip().lower()
+    if provider_key != "aisstream":
+        raise ValueError("providerKey must be aisstream.")
+    normalized_record_key = normalize_record_key(record_key)
+    if not normalized_record_key:
+        raise ValueError("recordKey is required.")
+    detail = AIS_SNAPSHOT_CACHE.get(normalized_record_key)
+    if not detail:
+        return None
+    return {
+        "available": True,
+        "provider": "aisstream",
+        "providerKey": "aisstream",
+        "providerLabel": "AISStream",
+        "recordKey": normalized_record_key,
+        "entityKey": detail["entityKey"],
+        "fetchedAtMs": detail["fetchedAtMs"],
+        "summary": detail["summary"],
+        "raw": detail["raw"],
+    }
+
+
 class JobStore:
     def __init__(self):
         self._lock = threading.Lock()
@@ -1387,6 +2052,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(self, status_code, body, content_type, headers=None):
+        self.send_response(status_code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
     def _read_json(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -1443,6 +2117,41 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, json_response(True, build_selected_area_response()))
             elif path == "/api/capabilities":
                 self._send_json(200, json_response(True, build_capabilities()))
+            elif path == "/api/vessels/aisstream" or path == "/api/ais":
+                self._send_json(200, json_response(True, fetch_aisstream_vessels(query)))
+            elif path == "/api/vessels/detail":
+                provider_key = (query.get("providerKey") or [""])[0]
+                record_key = (query.get("recordKey") or [""])[0]
+                detail = build_vessel_detail_response(provider_key, record_key)
+                if not detail:
+                    self._send_json(
+                        404,
+                        json_response(
+                            False,
+                            error={
+                                "code": "vessel_detail_not_found",
+                                "message": "Vessel detail is unavailable for the selected vessel.",
+                            },
+                        ),
+                    )
+                    return
+                self._send_json(200, json_response(True, detail))
+            elif path.startswith("/api/traffic/tomtom/"):
+                parsed_tile = parse_tomtom_tile_path(path)
+                if not parsed_tile:
+                    self._send_json(404, json_response(False, error={"code": "not_found", "message": "Not found."}))
+                    return
+                kind, z, x, y = parsed_tile
+                tile = fetch_tomtom_traffic_tile(kind, z, x, y)
+                self._send_bytes(
+                    200,
+                    tile["body"],
+                    tile["contentType"],
+                    {
+                        "Cache-Control": "private, max-age=30",
+                        "X-SHM-Cache": tile["cache"],
+                    },
+                )
             elif path == "/api/search":
                 search_query = (query.get("q") or [""])[0].strip()
                 if not search_query:

@@ -26,12 +26,17 @@ Viewer:
 Viewer features:
 - top-left coordinate or address search
 - a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
-- right-side flight overlay toggles for OpenSky and ADS-B Exchange when configured
+- right-side live overlay toggles for OpenSky, ADS-B Exchange, AIS vessels, and TomTom traffic when configured
 
 Flight data configuration:
 - OpenSky works anonymously by default. For authenticated REST API access, set SHM_OPENSKY_CLIENT_ID and SHM_OPENSKY_CLIENT_SECRET in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
 - SHM_OPENSKY_TOKEN_URL is optional and defaults to OpenSky's OAuth2 token endpoint.
 - Restart self-hosted-maps-api after changing runtime flight credentials.
+
+Vessel and traffic data configuration:
+- AISStream vessel positions are disabled by default. Set SHM_AISSTREAM_ENABLED=1 and SHM_AISSTREAM_API_KEY in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
+- TomTom traffic flow and incident overlays are disabled by default. Set SHM_TOMTOM_TRAFFIC_ENABLED=1 and SHM_TOMTOM_API_KEY in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
+- Provider keys stay server-side; the browser uses local /api proxy URLs. Restart self-hosted-maps-api after changing runtime live-layer credentials.
 
 Manager capabilities:
 - browse the live catalog

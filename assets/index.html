@@ -26,17 +26,17 @@
       id="flightMenuToggle"
       class="flight-menu-toggle"
       type="button"
-      aria-label="Air traffic layers"
+      aria-label="Live data layers"
       aria-expanded="false"
       aria-controls="flightMenuPanel"
       aria-haspopup="true"
-      title="Air traffic layers"
+      title="Live data layers"
     >
       <span class="flight-menu-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" focusable="false">
           <path
             fill="currentColor"
-            d="M21.44 10.05L13.5 12.18V8.1l3.2-2.28V4.2l-4.7 1.6L9.3 4.2v1.62L12.5 8.1v4.08l-7.94-2.13L3 11.61l9.5 5.16v3.12L10.3 21v1.2l1.7-.42L13.7 22v-1.2l-1.2-1.11v-3.12L22 11.61z"
+            d="M12 3.4 3.4 7.8 12 12.2l8.6-4.4zM5.6 11.2 12 14.5l6.4-3.3 2.2 1.1L12 16.8l-8.6-4.5zM5.6 15.5 12 18.8l6.4-3.3 2.2 1.1L12 21.1l-8.6-4.5z"
           />
         </svg>
       </span>
@@ -44,6 +44,9 @@
     <div id="flightMenuPanel" class="flight-menu-panel" aria-hidden="true">
       <button id="toggleOpenSky" class="flight-button" type="button" tabindex="-1">OpenSky</button>
       <button id="toggleAdsbx" class="flight-button" type="button" tabindex="-1">ADS-B Exchange</button>
+      <button id="toggleAisVessels" class="flight-button" type="button" tabindex="-1">AIS vessels</button>
+      <button id="toggleTrafficFlow" class="flight-button" type="button" tabindex="-1">Traffic flow</button>
+      <button id="toggleTrafficIncidents" class="flight-button" type="button" tabindex="-1">Traffic incidents</button>
     </div>
   </div>
 
