@@ -17,6 +17,10 @@ const VESSEL_LAYER_ID = "aisstream-vessel-symbols";
 const VESSEL_HIT_LAYER_ID = "aisstream-vessel-hit";
 const VESSEL_ICON_IMAGE_ID = "vessel-icon-aisstream";
 const VESSEL_POLL_INTERVAL_MS = 30000;
+const STREET_IMAGERY_SOURCE_ID = "local-street-imagery";
+const STREET_IMAGERY_LAYER_ID = "local-street-imagery-markers";
+const STREET_IMAGERY_HIT_LAYER_ID = "local-street-imagery-hit";
+const STREET_IMAGERY_DEBOUNCE_MS = 350;
 const TRAFFIC_LAYERS = {
   flow: {
     buttonId: "toggleTrafficFlow",
@@ -140,6 +144,8 @@ const appState = {
     tomTomTrafficConfigured: false,
     tomTomTrafficFlowEnabled: false,
     tomTomTrafficIncidentsEnabled: false,
+    streetImageryEnabled: false,
+    streetImageryConfigured: false,
     adminTokenRequired: false
   },
   datasets: [],
@@ -184,6 +190,15 @@ const appState = {
   trafficEnabled: {
     flow: false,
     incidents: false
+  },
+  streetImagery: {
+    enabled: false,
+    requestSeq: 0,
+    abortController: null,
+    refreshTimer: null,
+    features: emptyFeatureCollection(),
+    selectedItemId: null,
+    selectedItem: null
   },
   suppressFlightPopupClose: false,
   prefersReducedMotion: reducedMotionEnabled(),
@@ -966,6 +981,258 @@ function setTrafficLayerVisibility(kind, visible) {
   }
 }
 
+function isStreetImageryAvailable() {
+  return Boolean(appState.capabilities.streetImageryEnabled && appState.capabilities.streetImageryConfigured);
+}
+
+function setStreetImagerySourceData(featureCollection) {
+  if (!appState.map?.getSource(STREET_IMAGERY_SOURCE_ID)) {
+    return;
+  }
+  appState.map.getSource(STREET_IMAGERY_SOURCE_ID).setData(featureCollection || emptyFeatureCollection());
+}
+
+function ensureStreetImageryLayers() {
+  if (!appState.map) {
+    return;
+  }
+  if (!appState.map.getSource(STREET_IMAGERY_SOURCE_ID)) {
+    appState.map.addSource(STREET_IMAGERY_SOURCE_ID, {
+      type: "geojson",
+      data: appState.streetImagery.features || emptyFeatureCollection()
+    });
+  }
+  if (!appState.map.getLayer(STREET_IMAGERY_HIT_LAYER_ID)) {
+    appState.map.addLayer({
+      id: STREET_IMAGERY_HIT_LAYER_ID,
+      type: "circle",
+      source: STREET_IMAGERY_SOURCE_ID,
+      layout: { visibility: appState.streetImagery.enabled ? "visible" : "none" },
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 14, 16, 22],
+        "circle-opacity": 0.01
+      }
+    });
+  }
+  if (!appState.map.getLayer(STREET_IMAGERY_LAYER_ID)) {
+    appState.map.addLayer({
+      id: STREET_IMAGERY_LAYER_ID,
+      type: "circle",
+      source: STREET_IMAGERY_SOURCE_ID,
+      layout: { visibility: appState.streetImagery.enabled ? "visible" : "none" },
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 5, 16, 8],
+        "circle-color": "#16a34a",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 2,
+        "circle-opacity": 0.92
+      }
+    });
+  }
+}
+
+function setStreetImageryLayerVisibility(visible) {
+  if (!appState.map) {
+    return;
+  }
+  if (visible) {
+    ensureStreetImageryLayers();
+  }
+  [STREET_IMAGERY_HIT_LAYER_ID, STREET_IMAGERY_LAYER_ID].forEach((layerId) => {
+    if (appState.map.getLayer(layerId)) {
+      appState.map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+    }
+  });
+}
+
+function currentStreetImageryQuery() {
+  const bounds = appState.map.getBounds();
+  return {
+    bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()]
+      .map((value) => value.toFixed(6))
+      .join(","),
+    limit: appState.capabilities.streetImageryMaxResults || 200
+  };
+}
+
+async function refreshStreetImagery(suppressErrors = false) {
+  if (!appState.streetImagery.enabled || !appState.map || !appState.map.isStyleLoaded()) {
+    return;
+  }
+  appState.streetImagery.abortController?.abort();
+  appState.streetImagery.requestSeq += 1;
+  const requestSeq = appState.streetImagery.requestSeq;
+  const controller = new AbortController();
+  appState.streetImagery.abortController = controller;
+  try {
+    const query = currentStreetImageryQuery();
+    const data = await requestJson(`/api/street-imagery/local/coverage?${new URLSearchParams(query).toString()}`, {
+      signal: controller.signal
+    });
+    if (requestSeq !== appState.streetImagery.requestSeq || controller.signal.aborted || !appState.streetImagery.enabled) {
+      return;
+    }
+    appState.streetImagery.features = data || emptyFeatureCollection();
+    setStreetImagerySourceData(appState.streetImagery.features);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      return;
+    }
+    if (!suppressErrors) {
+      showMessage(error.message, "warn");
+    }
+  }
+}
+
+function scheduleStreetImageryRefresh(suppressErrors = true) {
+  window.clearTimeout(appState.streetImagery.refreshTimer);
+  appState.streetImagery.refreshTimer = window.setTimeout(() => {
+    refreshStreetImagery(suppressErrors);
+  }, STREET_IMAGERY_DEBOUNCE_MS);
+}
+
+function closeStreetImageryPanel() {
+  appState.streetImagery.selectedItemId = null;
+  appState.streetImagery.selectedItem = null;
+  const panel = document.getElementById("streetImageryPanel");
+  if (panel) {
+    panel.hidden = true;
+    panel.replaceChildren();
+  }
+}
+
+function renderStreetImageryPanel() {
+  const panel = document.getElementById("streetImageryPanel");
+  const item = appState.streetImagery.selectedItem;
+  if (!panel || !item) {
+    return;
+  }
+  panel.replaceChildren();
+  panel.hidden = false;
+
+  const header = document.createElement("div");
+  header.className = "street-imagery-panel-header";
+  const titleWrap = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = item.title || "Street imagery";
+  const badge = document.createElement("span");
+  badge.className = "street-imagery-badge";
+  badge.textContent = "Local owner-controlled";
+  titleWrap.append(title, badge);
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "street-imagery-close";
+  closeButton.textContent = "Close";
+  closeButton.addEventListener("click", closeStreetImageryPanel);
+  header.append(titleWrap, closeButton);
+  panel.append(header);
+
+  const image = document.createElement("img");
+  image.className = "street-imagery-image";
+  image.alt = item.title || "Local street imagery";
+  image.src = item.imageUrl;
+  panel.append(image);
+
+  const details = document.createElement("div");
+  details.className = "street-imagery-details";
+  [
+    popupRow("Captured", item.capturedAt),
+    popupRow("Heading", item.headingDeg != null ? `${Math.round(item.headingDeg)} deg` : null),
+    popupRow("Attribution", item.attribution),
+    popupRow("License", item.license?.name),
+    popupRow("Location", item.privacy?.exactLocationAllowed === false ? "Approximate" : "Exact approved"),
+    popupRow("Redaction", item.privacy?.redactionState || "Publishable")
+  ]
+    .filter(Boolean)
+    .forEach((row) => details.append(row));
+  panel.append(details);
+
+  if (item.prevItemId || item.nextItemId) {
+    const nav = document.createElement("div");
+    nav.className = "street-imagery-nav";
+    [
+      ["Previous", item.prevItemId],
+      ["Next", item.nextItemId]
+    ].forEach(([label, itemId]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.disabled = !itemId;
+      if (itemId) {
+        button.addEventListener("click", () => loadStreetImageryItem(itemId));
+      }
+      nav.append(button);
+    });
+    panel.append(nav);
+  }
+}
+
+function renderStreetImageryLoading(itemId) {
+  const panel = document.getElementById("streetImageryPanel");
+  if (!panel) {
+    return;
+  }
+  panel.hidden = false;
+  const loading = document.createElement("div");
+  loading.className = "street-imagery-empty";
+  loading.textContent = `Loading imagery ${itemId}...`;
+  panel.replaceChildren(loading);
+}
+
+async function loadStreetImageryItem(itemId) {
+  if (!itemId) {
+    return;
+  }
+  appState.streetImagery.selectedItemId = itemId;
+  appState.streetImagery.selectedItem = null;
+  renderStreetImageryLoading(itemId);
+  try {
+    const detail = await requestJson(`/api/street-imagery/local/items/${encodeURIComponent(itemId)}`);
+    if (appState.streetImagery.selectedItemId !== itemId) {
+      return;
+    }
+    appState.streetImagery.selectedItem = detail;
+    renderStreetImageryPanel();
+  } catch (error) {
+    showMessage(error.message, "warn");
+    closeStreetImageryPanel();
+  }
+}
+
+function selectStreetImageryFeature(feature) {
+  const itemId = feature?.properties?.id;
+  if (itemId) {
+    loadStreetImageryItem(itemId);
+  }
+}
+
+function stopStreetImagery() {
+  window.clearTimeout(appState.streetImagery.refreshTimer);
+  appState.streetImagery.abortController?.abort();
+  appState.streetImagery.features = emptyFeatureCollection();
+  setStreetImagerySourceData(emptyFeatureCollection());
+  setStreetImageryLayerVisibility(false);
+  closeStreetImageryPanel();
+}
+
+function toggleStreetImagery() {
+  if (!isStreetImageryAvailable()) {
+    return;
+  }
+  if (!appState.map || !appState.map.isStyleLoaded()) {
+    showMessage("Map is still loading. Try again in a moment.", "warn");
+    return;
+  }
+  appState.streetImagery.enabled = !appState.streetImagery.enabled;
+  setStreetImageryLayerVisibility(appState.streetImagery.enabled);
+  updateFlightButtons();
+  if (appState.streetImagery.enabled) {
+    refreshStreetImagery();
+  } else {
+    stopStreetImagery();
+  }
+}
+
 function flightMenuElements() {
   return {
     controls: document.getElementById("flightControls"),
@@ -976,7 +1243,8 @@ function flightMenuElements() {
       adsbx: document.getElementById(flightProviders.adsbx.buttonId),
       aisstream: document.getElementById("toggleAisVessels"),
       trafficFlow: document.getElementById(TRAFFIC_LAYERS.flow.buttonId),
-      trafficIncidents: document.getElementById(TRAFFIC_LAYERS.incidents.buttonId)
+      trafficIncidents: document.getElementById(TRAFFIC_LAYERS.incidents.buttonId),
+      streetImagery: document.getElementById("toggleStreetImagery")
     }
   };
 }
@@ -1075,14 +1343,28 @@ function updateFlightButtons() {
     button.textContent = available ? config.label : `${config.label} (Unavailable)`;
   });
 
+  if (buttons.streetImagery) {
+    const available = isStreetImageryAvailable();
+    buttons.streetImagery.disabled = !available;
+    buttons.streetImagery.classList.toggle("active", available && appState.streetImagery.enabled);
+    buttons.streetImagery.classList.toggle("unavailable", !available);
+    buttons.streetImagery.setAttribute(
+      "aria-pressed",
+      available && appState.streetImagery.enabled ? "true" : "false"
+    );
+    buttons.streetImagery.textContent = available ? "Street imagery" : "Street imagery (Unavailable)";
+  }
+
   if (toggle) {
     const anyActive =
       Object.keys(flightProviders).some((providerKey) => appState.flightsEnabled[providerKey]) ||
       appState.vesselsEnabled ||
-      Object.values(appState.trafficEnabled).some(Boolean);
+      Object.values(appState.trafficEnabled).some(Boolean) ||
+      appState.streetImagery.enabled;
     const anyAvailable = Object.keys(flightProviders).some((providerKey) =>
       isFlightProviderAvailable(providerKey)
-    ) || isVesselProviderAvailable() || Object.keys(TRAFFIC_LAYERS).some((kind) => isTrafficLayerAvailable(kind));
+    ) || isVesselProviderAvailable() || Object.keys(TRAFFIC_LAYERS).some((kind) => isTrafficLayerAvailable(kind)) ||
+      isStreetImageryAvailable();
     toggle.dataset.state = anyActive ? "active" : anyAvailable ? "idle" : "unavailable";
   }
 
@@ -1870,6 +2152,16 @@ function bindFlightMapInteractions() {
     provider.layerId
   ]);
   appState.map.on("click", (event) => {
+    const streetImageryLayers = [STREET_IMAGERY_HIT_LAYER_ID, STREET_IMAGERY_LAYER_ID].filter((layerId) =>
+      appState.map.getLayer(layerId)
+    );
+    if (streetImageryLayers.length) {
+      const streetFeatures = appState.map.queryRenderedFeatures(event.point, { layers: streetImageryLayers });
+      if (streetFeatures.length) {
+        selectStreetImageryFeature(streetFeatures[0]);
+        return;
+      }
+    }
     const vesselLayers = [VESSEL_HIT_LAYER_ID, VESSEL_LAYER_ID].filter((layerId) => appState.map.getLayer(layerId));
     if (vesselLayers.length) {
       const vesselFeatures = appState.map.queryRenderedFeatures(event.point, { layers: vesselLayers });
@@ -1891,6 +2183,14 @@ function bindFlightMapInteractions() {
     if (appState.selectedVessel) {
       clearSelectedVessel();
     }
+  });
+  [STREET_IMAGERY_HIT_LAYER_ID, STREET_IMAGERY_LAYER_ID].forEach((layerId) => {
+    appState.map.on("mouseenter", layerId, () => {
+      appState.map.getCanvas().style.cursor = "pointer";
+    });
+    appState.map.on("mouseleave", layerId, () => {
+      appState.map.getCanvas().style.cursor = "";
+    });
   });
   Object.values(flightProviders).forEach((provider) => {
     [provider.hitLayerId, provider.layerId].forEach((layerId) => {
@@ -2635,6 +2935,7 @@ function bindDomEvents() {
   document.getElementById("toggleAisVessels").addEventListener("click", () => toggleVessels());
   document.getElementById("toggleTrafficFlow").addEventListener("click", () => toggleTrafficLayer("flow"));
   document.getElementById("toggleTrafficIncidents").addEventListener("click", () => toggleTrafficLayer("incidents"));
+  document.getElementById("toggleStreetImagery").addEventListener("click", () => toggleStreetImagery());
   document.getElementById("catalogResults").addEventListener("click", (event) => {
     const button = event.target.closest("[data-install-id]");
     if (!button) {
@@ -2698,6 +2999,7 @@ async function initMap() {
     await registerVesselImage();
     ensureFlightLayers();
     ensureVesselLayers();
+    ensureStreetImageryLayers();
     bindFlightMapInteractions();
     applySelectedAreaOverlay();
     if (currentAreaBounds) {
@@ -2717,6 +3019,9 @@ async function initMap() {
     }
     if (appState.vesselsEnabled) {
       refreshVessels(true);
+    }
+    if (appState.streetImagery.enabled) {
+      scheduleStreetImageryRefresh(true);
     }
   });
 }

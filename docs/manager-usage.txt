@@ -26,7 +26,7 @@ Viewer:
 Viewer features:
 - top-left coordinate or address search
 - a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
-- right-side live overlay toggles for OpenSky, ADS-B Exchange, AIS vessels, and TomTom traffic when configured
+- right-side overlay toggles for OpenSky, ADS-B Exchange, AIS vessels, TomTom traffic, and local street imagery when configured
 
 Flight data configuration:
 - OpenSky works anonymously by default. For authenticated REST API access, set SHM_OPENSKY_CLIENT_ID and SHM_OPENSKY_CLIENT_SECRET in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
@@ -37,6 +37,13 @@ Vessel and traffic data configuration:
 - AISStream vessel positions are disabled by default. Set SHM_AISSTREAM_ENABLED=1 and SHM_AISSTREAM_API_KEY in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
 - TomTom traffic flow and incident overlays are disabled by default. Set SHM_TOMTOM_TRAFFIC_ENABLED=1 and SHM_TOMTOM_API_KEY in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
 - Provider keys stay server-side; the browser uses local /api proxy URLs. Restart self-hosted-maps-api after changing runtime live-layer credentials.
+
+Local street imagery configuration:
+- Local street imagery is disabled by default. Set SHM_STREET_IMAGERY_ENABLED=1 and optionally SHM_STREET_IMAGERY_ROOT in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
+- The default root is ${SHM_DATA_ROOT}/street-imagery and expects index.json plus relative media paths under that root. Custom SHM_STREET_IMAGERY_ROOT values must still resolve under SHM_DATA_ROOT.
+- Public viewer APIs expose only publishable/redacted records and API media URLs; they do not expose local paths.
+- Street imagery admin operations require SHM_ADMIN_TOKEN to be set and supplied with the request.
+- Panoramax is deferred/third-party-only. Google and Mapillary offline imagery are not implemented.
 
 Manager capabilities:
 - browse the live catalog

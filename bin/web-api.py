@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -51,6 +52,19 @@ AISSTREAM_MAX_BBOX_AREA = 100
 TOMTOM_DEFAULT_BASE_URL = "https://api.tomtom.com"
 TOMTOM_TRAFFIC_MAX_ZOOM = 22
 TOMTOM_TRAFFIC_MAX_TILE_BYTES = 1_500_000
+STREET_IMAGERY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+STREET_IMAGERY_DEFAULT_MAX_BBOX_AREA = 25.0
+STREET_IMAGERY_DEFAULT_MAX_RESULTS = 200
+STREET_IMAGERY_DEFAULT_MAX_IMAGE_BYTES = 20_000_000
+STREET_IMAGERY_DEFAULT_MAX_THUMBNAIL_BYTES = 2_000_000
+STREET_IMAGERY_ALLOWED_MIME_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+STREET_IMAGERY_PUBLIC_STATES = {"approved", "publishable", "published", "public"}
+STREET_IMAGERY_BLOCKED_STATES = {"active", "requested", "removed", "private", "suppressed", "blocked"}
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -58,6 +72,32 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)).strip())
+    except (AttributeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def env_float(name: str, default: float, minimum: float | None = None, maximum: float | None = None) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)).strip())
+    except (AttributeError, ValueError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
 
 
 def iso_now() -> str:
@@ -607,6 +647,7 @@ def build_capabilities():
     ais_key = os.environ.get("SHM_AISSTREAM_API_KEY", "").strip()
     tomtom_key = tomtom_api_key()
     tomtom_enabled = env_bool("SHM_TOMTOM_TRAFFIC_ENABLED", False) and bool(tomtom_key)
+    street_imagery_enabled = env_bool("SHM_STREET_IMAGERY_ENABLED", False)
     return {
         "addressSearchEnabled": env_bool("SHM_ADDRESS_SEARCH_ENABLED", True),
         "openSkyEnabled": env_bool("SHM_OPENSKY_ENABLED", True),
@@ -618,6 +659,12 @@ def build_capabilities():
         "tomTomTrafficConfigured": bool(tomtom_key),
         "tomTomTrafficFlowEnabled": tomtom_enabled and env_bool("SHM_TOMTOM_TRAFFIC_FLOW_ENABLED", True),
         "tomTomTrafficIncidentsEnabled": tomtom_enabled and env_bool("SHM_TOMTOM_TRAFFIC_INCIDENTS_ENABLED", True),
+        "streetImageryEnabled": street_imagery_enabled,
+        "streetImageryConfigured": street_imagery_enabled and street_imagery_index_path().exists(),
+        "streetImageryMaxResults": street_imagery_max_results(),
+        "streetImageryMaxBboxArea": street_imagery_max_bbox_area(),
+        "panoramaxEnabled": False,
+        "panoramaxMode": "deferred-third-party-only",
         "adminTokenRequired": bool(os.environ.get("SHM_ADMIN_TOKEN", "").strip()),
     }
 
@@ -766,6 +813,430 @@ def maybe_bool(value):
     if text in {"0", "false", "no", "off"}:
         return False
     return bool(text)
+
+
+def street_imagery_data_root() -> Path:
+    return Path(os.environ.get("SHM_DATA_ROOT", str(DATA_ROOT)))
+
+
+def street_imagery_root() -> Path:
+    override = os.environ.get("SHM_STREET_IMAGERY_ROOT", "").strip()
+    return Path(override) if override else street_imagery_data_root() / "street-imagery"
+
+
+def street_imagery_root_allowed() -> bool:
+    try:
+        street_imagery_root().resolve(strict=False).relative_to(street_imagery_data_root().resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def require_street_imagery_root_allowed():
+    if not street_imagery_root_allowed():
+        raise RuntimeError("SHM_STREET_IMAGERY_ROOT must remain under SHM_DATA_ROOT.")
+
+
+def street_imagery_index_path() -> Path:
+    return street_imagery_root() / "index.json"
+
+
+def street_imagery_max_bbox_area() -> float:
+    return env_float("SHM_STREET_IMAGERY_MAX_BBOX_AREA", STREET_IMAGERY_DEFAULT_MAX_BBOX_AREA, minimum=0.000001)
+
+
+def street_imagery_max_results() -> int:
+    return env_int("SHM_STREET_IMAGERY_MAX_RESULTS", STREET_IMAGERY_DEFAULT_MAX_RESULTS, minimum=1, maximum=1000)
+
+
+def street_imagery_max_media_bytes(kind: str) -> int:
+    default = (
+        STREET_IMAGERY_DEFAULT_MAX_THUMBNAIL_BYTES
+        if kind == "thumbnail"
+        else STREET_IMAGERY_DEFAULT_MAX_IMAGE_BYTES
+    )
+    env_name = "SHM_STREET_IMAGERY_MAX_THUMBNAIL_BYTES" if kind == "thumbnail" else "SHM_STREET_IMAGERY_MAX_IMAGE_BYTES"
+    return env_int(env_name, default, minimum=1)
+
+
+def street_imagery_capabilities():
+    enabled = env_bool("SHM_STREET_IMAGERY_ENABLED", False)
+    index_path = street_imagery_index_path()
+    root_allowed = street_imagery_root_allowed()
+    return {
+        "enabled": enabled,
+        "configured": enabled and root_allowed and index_path.exists(),
+        "provider": "local",
+        "rootConfigured": bool(os.environ.get("SHM_STREET_IMAGERY_ROOT", "").strip()),
+        "rootAllowed": root_allowed,
+        "maxBboxArea": street_imagery_max_bbox_area(),
+        "maxResults": street_imagery_max_results(),
+        "media": {
+            "imageMaxBytes": street_imagery_max_media_bytes("image"),
+            "thumbnailMaxBytes": street_imagery_max_media_bytes("thumbnail"),
+            "allowedMimeTypes": sorted(set(STREET_IMAGERY_ALLOWED_MIME_BY_EXT.values())),
+            "originalsEnabled": env_bool("SHM_STREET_IMAGERY_ALLOW_ORIGINALS", False),
+        },
+        "panoramax": {
+            "enabled": False,
+            "mode": "deferred-third-party-only",
+            "label": "Panoramax is not used by the local offline provider.",
+        },
+    }
+
+
+def load_street_imagery_index():
+    if not env_bool("SHM_STREET_IMAGERY_ENABLED", False):
+        return {"schema_version": 1, "items": []}, False
+    require_street_imagery_root_allowed()
+    path = street_imagery_index_path()
+    payload, present = read_json_file(path, warn_label="street imagery index")
+    if not present:
+        return {"schema_version": 1, "items": []}, False
+    if not isinstance(payload, dict):
+        raise RuntimeError("Street imagery index must be a JSON object.")
+    items = payload.get("items")
+    if items is None:
+        items = []
+    if not isinstance(items, list):
+        raise RuntimeError("Street imagery index items must be an array.")
+    return {**payload, "items": items}, True
+
+
+def validate_street_imagery_item_id(item_id: str) -> str:
+    item_id = str(item_id or "").strip()
+    if not STREET_IMAGERY_ID_RE.fullmatch(item_id):
+        raise ValueError("Invalid street imagery item id.")
+    return item_id
+
+
+def street_imagery_state(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def street_imagery_is_public(record):
+    if not isinstance(record, dict):
+        return False
+    item_id = str(record.get("id") or "").strip()
+    if not STREET_IMAGERY_ID_RE.fullmatch(item_id):
+        return False
+    lon = maybe_float(record.get("lon", record.get("longitude")))
+    lat = maybe_float(record.get("lat", record.get("latitude")))
+    if lon is None or lat is None or not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        return False
+
+    publish_state = street_imagery_state(record.get("publish_state", record.get("publishState")))
+    review_state = street_imagery_state(record.get("review_state", record.get("reviewState")))
+    publishable = maybe_bool(record.get("publishable"))
+    approved = maybe_bool(record.get("approved"))
+    public_state = (
+        publish_state in STREET_IMAGERY_PUBLIC_STATES
+        or review_state in STREET_IMAGERY_PUBLIC_STATES
+        or publishable is True
+        or approved is True
+    )
+    if not public_state:
+        return False
+
+    if maybe_bool(record.get("private")) or maybe_bool(record.get("removed")) or maybe_bool(record.get("suppressed")):
+        return False
+    takedown_state = street_imagery_state(record.get("takedown_state", record.get("takedownState")))
+    if takedown_state in STREET_IMAGERY_BLOCKED_STATES:
+        return False
+
+    redaction_required = maybe_bool(record.get("redaction_required", record.get("redactionRequired")))
+    if redaction_required:
+        redaction_state = street_imagery_state(record.get("redaction_state", record.get("redactionState")))
+        redacted = maybe_bool(record.get("redacted"))
+        if not (redacted is True or redaction_state in {"redacted", "complete", "completed"}):
+            return False
+    return True
+
+
+def street_imagery_public_coordinates(record):
+    lon = maybe_float(record.get("lon", record.get("longitude")))
+    lat = maybe_float(record.get("lat", record.get("latitude")))
+    exact_allowed = maybe_bool(record.get("exact_location_allowed", record.get("exactLocationAllowed")))
+    if exact_allowed is False:
+        display_lon = maybe_float(record.get("display_lon", record.get("displayLongitude")))
+        display_lat = maybe_float(record.get("display_lat", record.get("displayLatitude")))
+        if display_lon is not None and display_lat is not None:
+            return display_lon, display_lat, False
+        return round(lon, 3), round(lat, 3), False
+    return lon, lat, True
+
+
+def street_imagery_public_record(record):
+    item_id = validate_street_imagery_item_id(record.get("id"))
+    lon, lat, exact_location = street_imagery_public_coordinates(record)
+    heading = maybe_float(record.get("heading", record.get("heading_deg", record.get("headingDeg"))))
+    license_payload = record.get("license") if isinstance(record.get("license"), dict) else {}
+    source_payload = record.get("source") if isinstance(record.get("source"), dict) else {}
+    return sanitize_json_value(
+        {
+            "id": item_id,
+            "title": clean_text(record.get("title") or record.get("name")) or item_id,
+            "coordinates": [lon, lat],
+            "lat": lat,
+            "lon": lon,
+            "headingDeg": heading,
+            "capturedAt": clean_text(record.get("captured_at", record.get("capturedAt"))),
+            "sequenceId": clean_text(record.get("sequence_id", record.get("sequenceId"))),
+            "sequenceIndex": maybe_float(record.get("sequence_index", record.get("sequenceIndex"))),
+            "prevItemId": clean_text(record.get("prev_item_id", record.get("prevItemId"))),
+            "nextItemId": clean_text(record.get("next_item_id", record.get("nextItemId"))),
+            "attribution": clean_text(record.get("attribution")),
+            "license": {
+                "name": clean_text(license_payload.get("name")),
+                "url": clean_text(license_payload.get("url")),
+            },
+            "source": {
+                "type": clean_text(source_payload.get("type")) or "local",
+                "label": clean_text(source_payload.get("label") or source_payload.get("name")),
+            },
+            "privacy": {
+                "exactLocationAllowed": exact_location,
+                "exifStripped": maybe_bool(record.get("exif_stripped", record.get("exifStripped"))),
+                "reviewState": clean_text(record.get("review_state", record.get("reviewState"))),
+                "redactionState": clean_text(record.get("redaction_state", record.get("redactionState"))),
+                "publishState": clean_text(record.get("publish_state", record.get("publishState"))),
+                "faceBlurred": maybe_bool(record.get("face_blurred", record.get("faceBlurred"))),
+                "licensePlateBlurred": maybe_bool(
+                    record.get("license_plate_blurred", record.get("licensePlateBlurred"))
+                ),
+            },
+            "thumbnailUrl": f"/api/street-imagery/local/items/{urlparse.quote(item_id)}/thumbnail",
+            "imageUrl": f"/api/street-imagery/local/items/{urlparse.quote(item_id)}/image",
+        }
+    )
+
+
+def street_imagery_feature(record):
+    public = street_imagery_public_record(record)
+    return {
+        "type": "Feature",
+        "id": public["id"],
+        "geometry": {"type": "Point", "coordinates": public["coordinates"]},
+        "properties": {
+            "id": public["id"],
+            "title": public["title"],
+            "headingDeg": public["headingDeg"],
+            "capturedAt": public["capturedAt"],
+            "thumbnailUrl": public["thumbnailUrl"],
+            "attribution": public["attribution"],
+            "local": True,
+        },
+    }
+
+
+def parse_street_imagery_bbox(query):
+    raw_bbox = (query.get("bbox") or [""])[0]
+    try:
+        west, south, east, north = [float(part.strip()) for part in raw_bbox.split(",")]
+    except (AttributeError, ValueError):
+        raise ValueError("bbox must be minLon,minLat,maxLon,maxLat.")
+    if not all(math.isfinite(value) for value in [west, south, east, north]):
+        raise ValueError("bbox values must be finite numbers.")
+    if not (-180 <= west <= 180 and -180 <= east <= 180 and -90 <= south <= 90 and -90 <= north <= 90):
+        raise ValueError("bbox values are outside valid longitude/latitude ranges.")
+    if west >= east or south >= north:
+        raise ValueError("bbox minimums must be less than maximums.")
+    area = (east - west) * (north - south)
+    if area > street_imagery_max_bbox_area():
+        raise ValueError("Requested street imagery area is too large. Zoom in and try again.")
+    return west, south, east, north
+
+
+def parse_street_imagery_limit(query):
+    max_results = street_imagery_max_results()
+    raw = (query.get("limit") or [str(max_results)])[0]
+    try:
+        requested = int(float(raw))
+    except (TypeError, ValueError):
+        raise ValueError("limit must be a number.")
+    return max(1, min(requested, max_results))
+
+
+def street_imagery_public_items():
+    payload, present = load_street_imagery_index()
+    items = payload.get("items") if present else []
+    return [item for item in items if street_imagery_is_public(item)]
+
+
+def build_street_imagery_coverage(query):
+    if not env_bool("SHM_STREET_IMAGERY_ENABLED", False):
+        return {
+            "type": "FeatureCollection",
+            "features": [],
+            "meta": {"enabled": False, "provider": "local", "count": 0},
+        }
+    west, south, east, north = parse_street_imagery_bbox(query)
+    limit = parse_street_imagery_limit(query)
+    features = []
+    for record in street_imagery_public_items():
+        lon, lat, _exact = street_imagery_public_coordinates(record)
+        if west <= lon <= east and south <= lat <= north:
+            features.append(street_imagery_feature(record))
+            if len(features) >= limit:
+                break
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "meta": {"enabled": True, "provider": "local", "count": len(features), "limit": limit},
+    }
+
+
+def find_street_imagery_public_item(item_id):
+    item_id = validate_street_imagery_item_id(item_id)
+    for record in street_imagery_public_items():
+        if str(record.get("id") or "").strip() == item_id:
+            return record
+    return None
+
+
+def build_street_imagery_item_response(item_id):
+    record = find_street_imagery_public_item(item_id)
+    return street_imagery_public_record(record) if record else None
+
+
+def street_imagery_media_reference(record, kind):
+    media = record.get("media") if isinstance(record.get("media"), dict) else {}
+    if kind == "thumbnail":
+        return clean_text(
+            media.get("thumbnail")
+            or media.get("thumbnail_path")
+            or record.get("thumbnail")
+            or record.get("thumbnail_path")
+        )
+    image = clean_text(media.get("redacted") or media.get("image") or record.get("redacted_path") or record.get("image_path"))
+    if image:
+        return image
+    if env_bool("SHM_STREET_IMAGERY_ALLOW_ORIGINALS", False):
+        return clean_text(media.get("original") or record.get("original_path"))
+    return None
+
+
+def path_contains_symlink(candidate: Path, root: Path) -> bool:
+    try:
+        root_resolved = root.resolve(strict=True)
+    except OSError:
+        return False
+    current = root_resolved
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        relative = Path(*candidate.parts[len(root.parts) :])
+    for part in relative.parts:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            return True
+    return False
+
+
+def resolve_street_imagery_media_path(media_ref: str) -> Path:
+    media_ref = clean_text(media_ref)
+    if not media_ref:
+        raise FileNotFoundError("Street imagery media is not configured for this item.")
+    parsed = urlparse.urlparse(media_ref)
+    if parsed.scheme or parsed.netloc:
+        raise ValueError("Street imagery media references must be local relative paths.")
+    relative = Path(media_ref)
+    if relative.is_absolute() or any(part in {"..", ""} for part in relative.parts):
+        raise ValueError("Street imagery media path is outside the configured root.")
+    root = street_imagery_root()
+    require_street_imagery_root_allowed()
+    root_resolved = root.resolve(strict=False)
+    candidate = root / relative
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError("Street imagery media path is outside the configured root.") from exc
+    if path_contains_symlink(candidate, root):
+        raise ValueError("Street imagery media path may not contain symlinks.")
+    return resolved
+
+
+def street_imagery_content_type(path: Path) -> str:
+    content_type = STREET_IMAGERY_ALLOWED_MIME_BY_EXT.get(path.suffix.lower())
+    if not content_type:
+        raise ValueError("Street imagery media type is not allowed.")
+    return content_type
+
+
+def street_imagery_magic_matches(content_type: str, body: bytes) -> bool:
+    if content_type == "image/jpeg":
+        return body.startswith(b"\xff\xd8\xff")
+    if content_type == "image/png":
+        return body.startswith(b"\x89PNG\r\n\x1a\n")
+    if content_type == "image/webp":
+        return len(body) >= 12 and body[:4] == b"RIFF" and body[8:12] == b"WEBP"
+    return False
+
+
+def fetch_street_imagery_media(item_id, kind):
+    if kind not in {"thumbnail", "image"}:
+        raise ValueError("Unknown street imagery media kind.")
+    record = find_street_imagery_public_item(item_id)
+    if not record:
+        return None
+    media_ref = street_imagery_media_reference(record, kind)
+    if not media_ref:
+        raise RuntimeError("Street imagery original media is not publishable.")
+    path = resolve_street_imagery_media_path(media_ref)
+    content_type = street_imagery_content_type(path)
+    max_bytes = street_imagery_max_media_bytes(kind)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if not path.is_file():
+        raise ValueError("Street imagery media path is not a file.")
+    if stat.st_size > max_bytes:
+        raise RuntimeError("Street imagery media exceeds the configured byte limit.")
+    with path.open("rb") as handle:
+        body = handle.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise RuntimeError("Street imagery media exceeds the configured byte limit.")
+    if not street_imagery_magic_matches(content_type, body):
+        raise ValueError("Street imagery media bytes do not match the allowed MIME type.")
+    etag_seed = f"{item_id}:{kind}:{stat.st_mtime_ns}:{stat.st_size}"
+    etag = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:24]
+    return {
+        "body": body,
+        "contentType": content_type,
+        "headers": {
+            "Cache-Control": "private, max-age=3600",
+            "ETag": f'"{etag}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    }
+
+
+def authorize_owner_admin(headers):
+    token = os.environ.get("SHM_ADMIN_TOKEN", "").strip()
+    if not token:
+        return False, 403, {
+            "code": "owner_auth_required",
+            "message": "Street imagery admin operations require SHM_ADMIN_TOKEN to be set.",
+        }
+    auth_header = headers.get("Authorization", "").strip()
+    token_header = headers.get("X-SHM-Admin-Token", "").strip()
+    if auth_header == f"Bearer {token}" or token_header == token:
+        return True, 200, None
+    return False, 401, {"code": "admin_token_required", "message": "Admin token required."}
+
+
+def validate_street_imagery_admin_catalog():
+    payload, present = load_street_imagery_index()
+    public_count = len([item for item in payload.get("items", []) if street_imagery_is_public(item)])
+    return {
+        "present": present,
+        "schemaVersion": payload.get("schema_version", payload.get("schemaVersion", 1)),
+        "itemCount": len(payload.get("items", [])),
+        "publicItemCount": public_count,
+        "root": str(street_imagery_root()),
+    }
 
 
 def normalize_record_key(value):
@@ -2088,6 +2559,13 @@ class Handler(BaseHTTPRequestHandler):
         )
         return False
 
+    def _require_owner_admin(self):
+        ok, status_code, error = authorize_owner_admin(self.headers)
+        if ok:
+            return True
+        self._send_json(status_code, json_response(False, error=error))
+        return False
+
     def do_GET(self):
         parsed = urlparse.urlparse(self.path)
         path = parsed.path
@@ -2117,6 +2595,46 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, json_response(True, build_selected_area_response()))
             elif path == "/api/capabilities":
                 self._send_json(200, json_response(True, build_capabilities()))
+            elif path == "/api/street-imagery/capabilities":
+                self._send_json(200, json_response(True, street_imagery_capabilities()))
+            elif path == "/api/street-imagery/local/coverage":
+                self._send_json(200, json_response(True, build_street_imagery_coverage(query)))
+            elif path.startswith("/api/street-imagery/local/items/"):
+                parts = path.split("/")
+                if len(parts) == 6:
+                    item_id = urlparse.unquote(parts[5])
+                    detail = build_street_imagery_item_response(item_id)
+                    if not detail:
+                        self._send_json(
+                            404,
+                            json_response(
+                                False,
+                                error={
+                                    "code": "street_imagery_item_not_found",
+                                    "message": "Street imagery item is not available.",
+                                },
+                            ),
+                        )
+                        return
+                    self._send_json(200, json_response(True, detail))
+                elif len(parts) == 7 and parts[6] in {"thumbnail", "image"}:
+                    item_id = urlparse.unquote(parts[5])
+                    media = fetch_street_imagery_media(item_id, parts[6])
+                    if not media:
+                        self._send_json(
+                            404,
+                            json_response(
+                                False,
+                                error={
+                                    "code": "street_imagery_media_not_found",
+                                    "message": "Street imagery media is not available.",
+                                },
+                            ),
+                        )
+                        return
+                    self._send_bytes(200, media["body"], media["contentType"], media["headers"])
+                else:
+                    self._send_json(404, json_response(False, error={"code": "not_found", "message": "Not found."}))
             elif path == "/api/vessels/aisstream" or path == "/api/ais":
                 self._send_json(200, json_response(True, fetch_aisstream_vessels(query)))
             elif path == "/api/vessels/detail":
@@ -2224,7 +2742,10 @@ class Handler(BaseHTTPRequestHandler):
         if not path.startswith("/api/admin/"):
             self._send_json(404, json_response(False, error={"code": "not_found", "message": "Not found."}))
             return
-        if not self._require_admin():
+        if path.startswith("/api/admin/street-imagery/"):
+            if not self._require_owner_admin():
+                return
+        elif not self._require_admin():
             return
 
         try:
@@ -2258,6 +2779,9 @@ class Handler(BaseHTTPRequestHandler):
                     "activate_selection",
                     ["bash", str(BIN_DIR / "activate-selection.sh"), *dataset_ids],
                 )
+            elif path == "/api/admin/street-imagery/reload":
+                self._send_json(200, json_response(True, validate_street_imagery_admin_catalog()))
+                return
             else:
                 self._send_json(404, json_response(False, error={"code": "not_found", "message": "Not found."}))
                 return

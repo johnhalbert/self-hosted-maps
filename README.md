@@ -4,6 +4,7 @@
 
 - Static world land fallback data is vendored in `assets/world-land.geojson`. Source and regeneration details live in `docs/world-land.md`.
 - Curated U.S. state display-boundary overrides are vendored in `assets/us-state-display-boundary-index.json`. Source and regeneration details live in `docs/us-state-display-boundaries.md`.
+- Disabled-by-default local street imagery support is documented in `docs/local-street-imagery.md`.
 - This repo expects LF line endings. Avoid switching the same checkout back and forth between Windows Git and WSL Git; if you need both, use separate clones or worktrees.
 
 ## Runtime Configuration
@@ -32,6 +33,16 @@ SHM_TOMTOM_API_KEY="your-tomtom-key"
 ```
 
 TomTom tiles are proxied through `/api/traffic/tomtom/...` so the browser never receives the API key. Restart `self-hosted-maps-api` after changing these runtime settings.
+
+Local street imagery is disabled by default and only serves owner-controlled, publishable/redacted records from `SHM_STREET_IMAGERY_ROOT` or `${SHM_DATA_ROOT}/street-imagery`:
+
+```sh
+SHM_STREET_IMAGERY_ENABLED="1"
+SHM_STREET_IMAGERY_ROOT="/var/lib/self-hosted-maps/street-imagery"
+```
+
+The browser uses `/api/street-imagery/...` item ids and never sends local file paths or URLs. Street imagery admin operations require `SHM_ADMIN_TOKEN` to be set. Panoramax remains deferred/third-party-only and Google/Mapillary offline modes are not implemented.
+If `SHM_STREET_IMAGERY_ROOT` is customized, it must still resolve under `SHM_DATA_ROOT`.
 
 ## Application Updates
 
