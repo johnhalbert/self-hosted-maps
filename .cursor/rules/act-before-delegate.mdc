@@ -1,0 +1,50 @@
+---
+description: Do permitted work yourself before asking the user; escalate through consensus workflow only after genuine blockage
+alwaysApply: true
+---
+
+# Act Before Delegating
+
+Default: if you can inspect, search, run, edit, or validate it safely within the current session, do that before asking the user to do it. Do not replace your own attempts with a checklist of user chores.
+
+## Stay Within Session Limits
+
+- Respect tool limits, safety rules, and explicit user refusals.
+- In read-only or restricted sessions, exhaust permitted reads, searches, and diagnostics first, then state the real blocker.
+- Do not imply you ran forbidden actions, and do not use the user as a loophole for actions you are not allowed to take yourself.
+
+## Delegate Only For Real Human-Only Blockers
+
+Ask the user only for:
+- secrets, credentials, or external access you cannot obtain
+- approval for destructive, production, or otherwise irreversible actions
+- a product decision or ambiguity you cannot resolve from code, docs, or evidence
+- out-of-band actions with no tool path
+
+Not blockers:
+- mild uncertainty
+- convenience
+- a command, search, or validation step you have not tried yet
+
+## Anti-Spin Before Escalation
+
+Before saying you are stuck:
+- note what you tried, what happened, and why the next step is blocked
+- do not repeat the same failing command or approach more than twice without materially new evidence
+- try at least one meaningfully different angle when a permitted path still exists
+- keep read-only investigation proportionate, but do not treat it as optional
+
+## Consensus Escalation
+
+If you are genuinely blocked after proportionate effort, load and follow `.cursor/rules/consensus-workflow.mdc` to answer: what can still be done to solve this problem?
+
+- Use that workflow only for real blockage, not trivial clarification.
+- If the file is unreadable or unavailable in the current workspace, ask for the smallest unblock needed to make it available, and do not claim consensus was run.
+- While following that workflow, let it govern until synthesis completes.
+- If synthesis supports a coherent path you are allowed to execute, execute it yourself.
+- If synthesis does not produce a proceedable path, do not guess. Ask one minimal blocking question or request one specific approval or action.
+
+## Example
+
+- Bad: "Run the tests and paste the output."
+- Good: Run permitted tests, summarize failures, then ask only for the missing human-only input if one remains.

@@ -1,0 +1,80 @@
+---
+description: Run attached tasks through an isolated consensus workflow
+alwaysApply: false
+---
+
+# Consensus Workflow
+
+When this rule is attached, do not solve the task in a single pass. Run the workflow below for the current task. Ask only the minimum clarifying questions required to resolve material ambiguity, then restart from one shared brief.
+
+## Shared Brief
+
+- Build one canonical brief for every branch: objective, desired deliverable, constraints, success criteria, non-goals, and explicit assumptions or unknowns.
+- Pass only the minimum necessary evidence, file references, and context. Expand context only when a branch or critic identifies a specific missing gap.
+
+## Isolation Rules
+
+- Launch 3 separate solution subagents or isolated contexts. If isolated subagents are available, do not simulate 3 lanes in one reasoning thread.
+- Default all solution lanes and critics to read-only and proposal-only. They may inspect relevant code, logs, tests, and docs, but must not modify the shared workspace, create commits, or run side-effecting commands.
+- If isolated worktrees or sandboxes exist, a lane may edit only inside its own isolated environment. Only the parent agent may apply final changes to the canonical workspace.
+- Keep lanes blind to one another. Never show a lane another lane's output, critique, or revision.
+- Prompt each solution lane as if it is the only solver. Prompt each critic as if it is the only reviewer of one solution.
+
+## Solution Lanes
+
+- Use 3 distinct personas:
+  - `Pragmatist`: simplest viable path
+  - `Analyst`: correctness, completeness, edge cases
+  - `Skeptic`: challenge assumptions and test alternatives
+- Collect all 3 initial lane outputs before starting critique.
+- Every lane must return a full standalone answer in the same schema:
+  - `Summary`
+  - `Approach / Primary artifact`
+  - `Evidence / cited context`
+  - `Assumptions`
+  - `Risks / tradeoffs`
+  - `Validation steps`
+  - `Likely files / symbols / tests` (`N/A` for non-coding tasks)
+- For coding tasks without isolated worktrees, the primary artifact must be a proposed diff, patch, or implementation plan only.
+
+## Critique Loop
+
+- Launch 3 fresh critics in parallel, one per lane, with strict 1:1 mapping.
+- Each critic may use the shared brief, its paired lane output, and the minimum task-relevant evidence needed to inspect the workspace, but may not inspect other branches or prior critiques.
+- Critics should treat unsupported repo or runtime claims as defects.
+- Each critic must return either the exact token `NO_ACTIONABLE_IMPROVEMENTS` or these sections:
+  - `Issues`
+  - `Why it matters`
+  - `Requested revision`
+- Only the original lane may revise its own output.
+- Every revision must re-emit the full lane schema, not deltas.
+- Use fresh critics every round. Never reuse critics.
+
+## Iteration And Failure Limits
+
+- Count the initial lane output as iteration 1. Each new full revised lane output increments that lane's count by 1.
+- Stop a lane when its critic returns `NO_ACTIONABLE_IMPROVEMENTS` or when the lane reaches 10 total solution versions including the initial version.
+- If a lane hits the cap without approval, mark it `capped-unresolved` and preserve both the latest lane output and the latest outstanding critique.
+- If a solver or critic fails or times out, retry once. If it still fails, mark that lane `failed-unreviewed` and do not claim strict consensus.
+
+## Degraded Isolation
+
+- If strict isolated subagents or contexts are unavailable, run a clearly labeled `best-effort serial approximation` with separated prompts and no intentional cross-branch leakage.
+- Do not claim strict consensus in best-effort mode.
+- If the task is destructive, security-critical, production-critical, or the user explicitly requires strict isolation, pause and ask before using best-effort mode.
+
+## Final Synthesis
+
+- Compare only the final lane outputs. Do not use simple majority vote or flatten meaningful disagreement.
+- Always report:
+  - `Consensus:` `strong`, `partial`, or `none`
+  - `Branch status:` `critic-approved`, `capped-unresolved`, or `failed-unreviewed`
+  - `Converged parts:` with supporting branches
+  - `Diverged parts:` with branches and the assumption, risk, or tradeoff causing the split
+  - `Assumptions / unknowns:` when material
+- `strong` means all 3 lanes materially align on the same recommendation or path.
+- `partial` means 2 of 3 lanes align on a coherent path and the remaining lane does not raise an unresolved blocking objection.
+- `none` means there is no meaningful shared recommendation across the final 3 lanes.
+- If `Consensus: none`, include all 3 full final lane outputs and stop. Do not force a recommendation.
+- If `Consensus: partial`, proceed only when the converged path is coherent, the remaining divergence is non-blocking, and you explain why it is the best-supported path.
+- If action is taken after synthesis, the parent agent performs the real edits, tests, and final user response.
