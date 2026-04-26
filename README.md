@@ -6,6 +6,7 @@
 - Curated U.S. state display-boundary overrides are vendored in `assets/us-state-display-boundary-index.json`. Source and regeneration details live in `docs/us-state-display-boundaries.md`.
 - Offline OSM layer controls and the repo-owned Tilemaker profile are documented in `docs/offline-osm-overlays.md`.
 - Offline raster imagery overlays can be installed from licensed raster MBTiles. Usage and licensing requirements live in `docs/imagery-overlays.md`.
+- Optional offline terrain and hillshade artifacts live under the data root, not app assets. Install details live in `docs/terrain.md`.
 - This repo expects LF line endings. Avoid switching the same checkout back and forth between Windows Git and WSL Git; if you need both, use separate clones or worktrees.
 
 ## Runtime Configuration
@@ -42,6 +43,10 @@ self-hosted-maps-install-imagery <id> "<name>" /path/to/tiles.mbtiles --attribut
 self-hosted-maps-list-imagery
 self-hosted-maps-remove-imagery <id>
 ```
+
+## Offline Terrain
+
+Terrain and hillshade are disabled until a matching local raster-dem artifact is installed under `/var/lib/self-hosted-maps/current/terrain`. The API advertises terrain only when its manifest matches the current map `selected_hash` and `dataset_ids`, so stale terrain is hidden after vector map changes. Small local DEMs can be converted with `bin/build-terrain-tiles.py`; see `docs/terrain.md`.
 
 ## Application Updates
 

@@ -135,6 +135,9 @@ if [[ "${#PBF_PATHS[@]}" -gt 1 ]]; then
   osmium merge --overwrite -o "$INPUT_PBF" "${PBF_PATHS[@]}"
 fi
 
+DATASET_IDS_JSON="$(printf '%s\n' "${DATASET_IDS[@]}" | jq -Rsc 'split("\n")[:-1]')"
+CURRENT_HASH="$(printf '%s\n' "${DATASET_IDS[@]}" | sha256sum | awk '{print $1}')"
+
 "$TILEMAKER_BIN" \
   --input "$INPUT_PBF" \
   --output "$BUILD_DIR/openmaptiles.mbtiles" \
@@ -147,23 +150,54 @@ update_mbtiles_bounds_metadata "$BUILD_DIR/openmaptiles.mbtiles" "${PBF_PATHS[@]
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 cp "$BUILD_DIR/openmaptiles.mbtiles" "$TMP_DIR/openmaptiles.mbtiles"
+if [[ -f "${SHM_DATA_ROOT}/current/terrain/terrain-manifest.json" ]]; then
+  if jq -e --arg hash "$CURRENT_HASH" --argjson dataset_ids "$DATASET_IDS_JSON" '
+    (.schema_version == 1)
+    and ((.selected_hash // "") == $hash)
+    and ((.dataset_ids // []) == $dataset_ids)
+  ' "${SHM_DATA_ROOT}/current/terrain/terrain-manifest.json" >/dev/null; then
+    cp -a "${SHM_DATA_ROOT}/current/terrain" "$TMP_DIR/terrain"
+    echo "Preserved matching terrain artifact for current dataset set."
+  else
+    echo "Terrain artifact is missing or stale for the rebuilt dataset set; disabling terrain metadata."
+  fi
+fi
 rm -rf "${SHM_DATA_ROOT}/current.prev"
 mv "${SHM_DATA_ROOT}/current" "${SHM_DATA_ROOT}/current.prev" 2>/dev/null || true
 mv "$TMP_DIR" "${SHM_DATA_ROOT}/current"
 rm -rf "${SHM_DATA_ROOT}/current.prev"
 
-DATASET_IDS_JSON="$(printf '%s\n' "${DATASET_IDS[@]}" | jq -Rsc 'split("\n")[:-1]')"
-CURRENT_HASH="$(printf '%s\n' "${DATASET_IDS[@]}" | sha256sum | awk '{print $1}')"
+if [[ -f "${SHM_DATA_ROOT}/current/terrain/terrain-manifest.json" ]]; then
+  TERRAIN_STATE_JSON="$(jq -c --arg manifest "${SHM_DATA_ROOT}/current/terrain/terrain-manifest.json" '
+    {
+      available: true,
+      manifest_path: $manifest,
+      selected_hash: (.selected_hash // null),
+      dataset_ids: (.dataset_ids // []),
+      encoding: (.encoding // null),
+      built_at: (.built_at // null),
+      contours: {
+        available: false,
+        enabled: false,
+        reason: "deferred"
+      }
+    }
+  ' "${SHM_DATA_ROOT}/current/terrain/terrain-manifest.json")"
+else
+  TERRAIN_STATE_JSON='{"available":false,"manifest_path":null,"reason":"not_installed_or_stale","contours":{"available":false,"enabled":false,"reason":"deferred"}}'
+fi
 
 STATE_TMP="$(mktemp)"
 jq --arg hash "$CURRENT_HASH" \
    --arg artifact "${SHM_DATA_ROOT}/current/openmaptiles.mbtiles" \
    --arg rebuilt_at "$(date -u +%FT%TZ)" \
-   --argjson dataset_ids "$DATASET_IDS_JSON" '
+   --argjson dataset_ids "$DATASET_IDS_JSON" \
+   --argjson terrain "$TERRAIN_STATE_JSON" '
   .current.selected_hash = $hash
   | .current.artifact_path = $artifact
   | .current.rebuilt_at = $rebuilt_at
   | .current.dataset_ids = $dataset_ids
+  | .current.terrain = $terrain
 ' "$SHM_STATE_FILE" > "$STATE_TMP"
 mv "$STATE_TMP" "$SHM_STATE_FILE"
 

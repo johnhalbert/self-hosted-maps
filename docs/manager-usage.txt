@@ -15,6 +15,7 @@ Useful commands:
   self-hosted-maps-install-imagery
   self-hosted-maps-list-imagery
   self-hosted-maps-remove-imagery
+  self-hosted-maps-install-terrain
   self-hosted-maps-update-app
 
 State file:
@@ -26,6 +27,9 @@ Current served tileset:
 Offline imagery root:
   /var/lib/self-hosted-maps/imagery
 
+Optional terrain artifact:
+  /var/lib/self-hosted-maps/current/terrain/terrain-manifest.json
+
 Viewer:
   http://<server-ip>/
 
@@ -33,7 +37,8 @@ Viewer features:
 - top-left coordinate or address search
 - a Maps modal for browsing installed maps, downloading catalog datasets, and rebuilding the active map selection
 - right-side offline OSM layer toggles for source layers present in the current vector tiles
-- right-side live overlay toggles for OpenSky, ADS-B Exchange, AIS vessels, TomTom traffic, and installed offline raster imagery when configured
+- right-side offline OSM layer toggles for source layers present in the current vector tiles
+- right-side layer toggles for OpenSky, ADS-B Exchange, AIS vessels, TomTom traffic, installed offline raster imagery, and local terrain/hillshade when configured
 
 Flight data configuration:
 - OpenSky works anonymously by default. For authenticated REST API access, set SHM_OPENSKY_CLIENT_ID and SHM_OPENSKY_CLIENT_SECRET in /etc/self-hosted-maps/self-hosted-maps.runtime.conf.
@@ -50,6 +55,13 @@ Offline imagery configuration:
 - Required install fields are id, name, MBTiles path, attribution, and license name.
 - Example: self-hosted-maps-install-imagery naip-local "NAIP local" /path/to/tiles.mbtiles --attribution "Provider attribution" --license-name "License name"
 - The API serves /api/imagery, raw /api/imagery/<id>.json TileJSON, and /api/imagery/<id>/<z>/<x>/<y>.<png|jpg|webp> tile bytes.
+
+Terrain configuration:
+- Terrain is optional and served from /var/lib/self-hosted-maps/current/terrain through nginx /terrain/.
+- Build small local raster-dem tile sets with python3 /opt/self-hosted-maps/bin/build-terrain-tiles.py and apt-provided GDAL bindings.
+- Install prebuilt Terrarium or Mapbox Terrain-RGB-compatible raster-dem PNG tiles with self-hosted-maps-install-terrain.
+- Terrain is shown only when terrain-manifest.json matches the current selected_hash and dataset_ids.
+- Contours are deferred in this version and reported as unavailable.
 
 Manager capabilities:
 - browse the live catalog

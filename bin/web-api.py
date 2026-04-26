@@ -67,6 +67,14 @@ IMAGERY_CONTENT_TYPES = {
 
 class NotFoundError(Exception):
     pass
+TERRAIN_MANIFEST_RELATIVE_PATH = Path("current") / "terrain" / "terrain-manifest.json"
+TERRAIN_TILE_TEMPLATE = "/terrain/dem/{z}/{x}/{y}.png"
+TERRAIN_ALLOWED_ENCODINGS = {
+    "terrarium": "terrarium",
+    "mapbox": "mapbox",
+    "mapbox-terrain-rgb": "mapbox",
+    "terrain-rgb": "mapbox",
+}
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -116,6 +124,16 @@ def default_state():
             "artifact_path": None,
             "rebuilt_at": None,
             "dataset_ids": [],
+            "terrain": {
+                "available": False,
+                "manifest_path": None,
+                "reason": "not_installed",
+                "contours": {
+                    "available": False,
+                    "enabled": False,
+                    "reason": "deferred",
+                },
+            },
         },
         "bootstrap": {},
     }
@@ -141,6 +159,13 @@ def read_state():
         merged["imagery"]["order"] = []
     if not isinstance(merged["imagery"].get("enabled"), list):
         merged["imagery"]["enabled"] = []
+    terrain = ((state.get("current") or {}).get("terrain") or {})
+    if isinstance(terrain, dict):
+        default_terrain = default_state()["current"]["terrain"]
+        default_contours = default_terrain["contours"]
+        merged["current"]["terrain"] = {**default_terrain, **terrain}
+        contours = terrain.get("contours") if isinstance(terrain.get("contours"), dict) else {}
+        merged["current"]["terrain"]["contours"] = {**default_contours, **contours}
     return merged, True
 
 
@@ -457,9 +482,144 @@ def compute_stale_flags(state):
     }
 
 
+def terrain_unavailable(reason: str, manifest_path: Path | None = None):
+    return {
+        "terrainAvailable": False,
+        "hillshadeAvailable": False,
+        "contoursAvailable": False,
+        "contoursEnabled": False,
+        "contoursReason": "deferred",
+        "reason": reason,
+        "manifestPresent": bool(manifest_path and manifest_path.exists()),
+        "terrainTileTemplate": None,
+        "encoding": None,
+        "rebuiltAt": None,
+        "attribution": None,
+        "minzoom": None,
+        "maxzoom": None,
+        "tileSize": None,
+        "bounds": None,
+        "selectedHash": None,
+        "datasetIds": [],
+    }
+
+
+def normalize_dataset_ids(value):
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def normalize_terrain_bounds(bounds):
+    if not isinstance(bounds, list) or len(bounds) != 4:
+        return None
+    try:
+        west, south, east, north = [float(value) for value in bounds]
+    except (TypeError, ValueError):
+        return None
+    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        return None
+    return [west, south, east, north]
+
+
+def terrain_manifest_path(state):
+    recorded = (((state.get("current") or {}).get("terrain") or {}).get("manifest_path") or "").strip()
+    if recorded:
+        path = Path(recorded)
+        expected_parent = (DATA_ROOT / "current" / "terrain").resolve()
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return DATA_ROOT / TERRAIN_MANIFEST_RELATIVE_PATH
+        try:
+            resolved.relative_to(expected_parent)
+        except ValueError:
+            return DATA_ROOT / TERRAIN_MANIFEST_RELATIVE_PATH
+        return path
+    return DATA_ROOT / TERRAIN_MANIFEST_RELATIVE_PATH
+
+
+def build_terrain_metadata(state=None):
+    state = state or read_state()[0]
+    current = state.get("current") or {}
+    manifest_path = terrain_manifest_path(state)
+    manifest, present = read_json_file(manifest_path, warn_label="terrain manifest")
+    if not present:
+        return terrain_unavailable("not_installed", manifest_path)
+    if not isinstance(manifest, dict):
+        return terrain_unavailable("invalid_manifest", manifest_path)
+    if manifest.get("schema_version") != 1:
+        return terrain_unavailable("unsupported_schema", manifest_path)
+
+    selected_hash = str(manifest.get("selected_hash") or "").strip()
+    current_hash = str(current.get("selected_hash") or "").strip()
+    if not selected_hash or selected_hash != current_hash:
+        return terrain_unavailable("stale_selected_hash", manifest_path)
+
+    dataset_ids = normalize_dataset_ids(manifest.get("dataset_ids"))
+    current_ids = normalize_dataset_ids(current.get("dataset_ids"))
+    if dataset_ids != current_ids:
+        return terrain_unavailable("stale_dataset_ids", manifest_path)
+
+    encoding = TERRAIN_ALLOWED_ENCODINGS.get(str(manifest.get("encoding") or "").strip().lower())
+    if not encoding:
+        return terrain_unavailable("unsupported_encoding", manifest_path)
+
+    raw_tile_template = str(manifest.get("terrain_tile_template") or manifest.get("tile_template") or "").strip()
+    if raw_tile_template and raw_tile_template != TERRAIN_TILE_TEMPLATE:
+        return terrain_unavailable("invalid_tile_template", manifest_path)
+
+    dem_root = manifest_path.parent / "dem"
+    if not dem_root.is_dir():
+        return terrain_unavailable("missing_dem_tiles", manifest_path)
+
+    try:
+        minzoom = int(manifest.get("minzoom"))
+        maxzoom = int(manifest.get("maxzoom"))
+    except (TypeError, ValueError):
+        return terrain_unavailable("invalid_zoom_range", manifest_path)
+    if minzoom < 0 or maxzoom < minzoom or maxzoom > 22:
+        return terrain_unavailable("invalid_zoom_range", manifest_path)
+
+    try:
+        tile_size = int(manifest.get("tile_size") or 256)
+    except (TypeError, ValueError):
+        return terrain_unavailable("invalid_tile_size", manifest_path)
+    if tile_size not in {256, 512}:
+        return terrain_unavailable("invalid_tile_size", manifest_path)
+
+    built_at = clean_text(manifest.get("built_at") or manifest.get("installed_at"))
+    attribution = clean_text(manifest.get("attribution") or _pick_nested(manifest, ("source", "attribution")))
+    contours = manifest.get("contours") if isinstance(manifest.get("contours"), dict) else {}
+    contours_reason = "deferred" if contours.get("available") else clean_text(contours.get("reason")) or "not_available"
+    version_key = built_at or selected_hash
+    tile_template = f"{TERRAIN_TILE_TEMPLATE}?v={urlparse.quote(version_key, safe='')}"
+
+    return {
+        "terrainAvailable": True,
+        "hillshadeAvailable": True,
+        "contoursAvailable": False,
+        "contoursEnabled": False,
+        "contoursReason": contours_reason,
+        "reason": None,
+        "manifestPresent": True,
+        "terrainTileTemplate": tile_template,
+        "encoding": encoding,
+        "rebuiltAt": built_at,
+        "attribution": attribution,
+        "minzoom": minzoom,
+        "maxzoom": maxzoom,
+        "tileSize": tile_size,
+        "bounds": normalize_terrain_bounds(manifest.get("bounds")),
+        "selectedHash": selected_hash,
+        "datasetIds": dataset_ids,
+    }
+
+
 def build_overview():
     state, state_present = read_state()
     stale = compute_stale_flags(state)
+    terrain = build_terrain_metadata(state)
     rebuilt_at = (state.get("current") or {}).get("rebuilt_at")
     installed = state.get("installed") or {}
     current_bounds = compute_bounds_for_dataset_ids(stale["currentIds"], installed)
@@ -474,6 +634,14 @@ def build_overview():
         "bootstrap": state.get("bootstrap") or {},
         "tilejsonUrl": tilejson_url,
         "currentBounds": current_bounds,
+        "terrain": terrain,
+        "terrainAvailable": terrain["terrainAvailable"],
+        "terrainTileTemplate": terrain["terrainTileTemplate"],
+        "encoding": terrain["encoding"],
+        "rebuiltAt": terrain["rebuiltAt"],
+        "attribution": terrain["attribution"],
+        "minzoom": terrain["minzoom"],
+        "maxzoom": terrain["maxzoom"],
         **stale,
     }
 
@@ -880,6 +1048,7 @@ def build_capabilities():
     ais_key = os.environ.get("SHM_AISSTREAM_API_KEY", "").strip()
     tomtom_key = tomtom_api_key()
     tomtom_enabled = env_bool("SHM_TOMTOM_TRAFFIC_ENABLED", False) and bool(tomtom_key)
+    terrain = build_terrain_metadata()
     return {
         "addressSearchEnabled": env_bool("SHM_ADDRESS_SEARCH_ENABLED", True),
         "openSkyEnabled": env_bool("SHM_OPENSKY_ENABLED", True),
@@ -891,6 +1060,9 @@ def build_capabilities():
         "tomTomTrafficConfigured": bool(tomtom_key),
         "tomTomTrafficFlowEnabled": tomtom_enabled and env_bool("SHM_TOMTOM_TRAFFIC_FLOW_ENABLED", True),
         "tomTomTrafficIncidentsEnabled": tomtom_enabled and env_bool("SHM_TOMTOM_TRAFFIC_INCIDENTS_ENABLED", True),
+        "terrainAvailable": terrain["terrainAvailable"],
+        "hillshadeAvailable": terrain["hillshadeAvailable"],
+        "contoursAvailable": terrain["contoursAvailable"],
         "adminTokenRequired": bool(os.environ.get("SHM_ADMIN_TOKEN", "").strip()),
     }
 

@@ -203,7 +203,8 @@ surfaces_json() {
         "/etc/systemd/system/self-hosted-maps-tileserver.service",
         "config_root/tileserver-config.json",
         "/etc/nginx/sites-available/self-hosted-maps-viewer",
-        "/etc/nginx/sites-enabled/self-hosted-maps-viewer"
+        "/etc/nginx/sites-enabled/self-hosted-maps-viewer",
+        "data_root/current/terrain via nginx /terrain alias"
       ] else [] end
     )
   }'
@@ -333,6 +334,7 @@ stage_runtime_files() {
   mkdir -p "$stage/install/bin" "$stage/install/www" "$stage/install/config/tilemaker" "$stage/config"
   cp -a "$source/bin/." "$stage/install/bin/"
   chmod +x "$stage/install/bin/"*.sh
+  chmod +x "$stage/install/bin/"*.py 2>/dev/null || true
 
   cp -a "$source/assets/." "$stage/install/www/"
   if [[ -d "$SHM_INSTALL_ROOT/www/vendor" ]]; then
@@ -349,7 +351,7 @@ validate_staged_runtime() {
   bash -n "$stage/install/bin/"*.sh
   jq -e '.layers | type == "object"' "$stage/install/config/tilemaker/config.json" >/dev/null
   if command -v python3 >/dev/null 2>&1; then
-    python3 -m py_compile "$stage/install/bin/web-api.py"
+    python3 -m py_compile "$stage/install/bin/"*.py
   fi
 }
 
@@ -379,6 +381,7 @@ backup_surfaces() {
     /usr/local/bin/self-hosted-maps-install-imagery \
     /usr/local/bin/self-hosted-maps-list-imagery \
     /usr/local/bin/self-hosted-maps-remove-imagery \
+    /usr/local/bin/self-hosted-maps-install-terrain \
     /usr/local/bin/self-hosted-maps-update-app; do
     if [[ -e "$link" || -L "$link" ]]; then
       cp -a "$link" "$backup/usr-local-bin/"
@@ -410,6 +413,7 @@ install_runtime_files() {
   ln -sf "$SHM_INSTALL_ROOT/bin/install-imagery-mbtiles.sh" /usr/local/bin/self-hosted-maps-install-imagery
   ln -sf "$SHM_INSTALL_ROOT/bin/list-imagery-overlays.sh" /usr/local/bin/self-hosted-maps-list-imagery
   ln -sf "$SHM_INSTALL_ROOT/bin/remove-imagery.sh" /usr/local/bin/self-hosted-maps-remove-imagery
+  ln -sf "$SHM_INSTALL_ROOT/bin/install-terrain-tiles.sh" /usr/local/bin/self-hosted-maps-install-terrain
   ln -sf "$SHM_INSTALL_ROOT/bin/update-app.sh" /usr/local/bin/self-hosted-maps-update-app
 }
 
@@ -471,7 +475,8 @@ refresh_system_config() {
     "__FONTS_ROOT__" "$fonts"
 
   render_template "$source/config/nginx-viewer.conf" "$stage/nginx/self-hosted-maps-viewer" \
-    "__INSTALL_ROOT__" "$SHM_INSTALL_ROOT"
+    "__INSTALL_ROOT__" "$SHM_INSTALL_ROOT" \
+    "__DATA_ROOT__" "$SHM_DATA_ROOT"
 
   install -d -m 0755 /etc/systemd/system "$SHM_CONFIG_ROOT" /etc/nginx/sites-available /etc/nginx/sites-enabled
   if install_if_changed 0644 "$stage/systemd/self-hosted-maps-api.service" /etc/systemd/system/self-hosted-maps-api.service; then

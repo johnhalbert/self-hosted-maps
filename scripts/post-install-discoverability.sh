@@ -13,6 +13,7 @@ ln -sf "${SHM_INSTALL_ROOT}/bin/list-installed.sh" /usr/local/bin/self-hosted-ma
 ln -sf "${SHM_INSTALL_ROOT}/bin/install-imagery-mbtiles.sh" /usr/local/bin/self-hosted-maps-install-imagery
 ln -sf "${SHM_INSTALL_ROOT}/bin/list-imagery-overlays.sh" /usr/local/bin/self-hosted-maps-list-imagery
 ln -sf "${SHM_INSTALL_ROOT}/bin/remove-imagery.sh" /usr/local/bin/self-hosted-maps-remove-imagery
+ln -sf "${SHM_INSTALL_ROOT}/bin/install-terrain-tiles.sh" /usr/local/bin/self-hosted-maps-install-terrain
 ln -sf "${SHM_INSTALL_ROOT}/bin/update-app.sh" /usr/local/bin/self-hosted-maps-update-app
 
 install -m 0644 "${SHM_REPO_ROOT}/docs/manager-usage.txt" "${SHM_CONFIG_ROOT}/manager-usage.txt"
